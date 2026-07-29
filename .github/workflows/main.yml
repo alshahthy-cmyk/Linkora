@@ -24,11 +24,16 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
       - name: Install EAS CLI globally
-        run: npm install -g eas-cli
+        run: pnpm add -g eas-cli
 
       - name: Install dependencies
-        run: npm install
+        run: pnpm install
 
       - name: Build Android APK
         env:
