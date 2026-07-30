@@ -1,0 +1,17 @@
+{
+  "$schema": "https://railpack.com/config/schema.json",
+  "build": {
+    "builder": "pnpm",
+    "installCmd": "pnpm install --no-frozen-lockfile",
+    "steps": [
+      {
+        "commands": [
+          "pnpm --filter ./artifacts/api-server run build"
+        ]
+      }
+    ]
+  },
+  "deploy": {
+    "startCmd": "pnpm --filter ./artifacts/api-server run start"
+  }
+}
