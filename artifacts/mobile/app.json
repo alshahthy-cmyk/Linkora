@@ -18,6 +18,7 @@
       "supportsTablet": false
     },
     "android": {
+      "package": "com.alshahthyameer.linkora",
       "softwareKeyboardLayoutMode": "pan"
     },
     "web": {
