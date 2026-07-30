@@ -2,7 +2,7 @@
 providers = ['node']
 
 [phases.setup]
-nixPkgs = ['...', 'pnpm']
+nixPkgs = ['pnpm']
 
 [phases.install]
 cmds = ['pnpm install --no-frozen-lockfile']
@@ -12,3 +12,6 @@ cmds = ['pnpm --filter ./artifacts/api-server run build']
 
 [start]
 cmd = 'pnpm --filter ./artifacts/api-server run start'
+
+[deploy]
+startCmd = 'pnpm --filter ./artifacts/api-server run start'
