@@ -4,3 +4,6 @@ buildCommand = "pnpm install --no-frozen-lockfile && pnpm --filter ./artifacts/a
 
 [deploy]
 startCommand = "pnpm --filter ./artifacts/api-server run start"
+
+[nixpacks]
+installCmd = "pnpm install --no-frozen-lockfile"
