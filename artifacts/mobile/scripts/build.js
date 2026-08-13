@@ -73,6 +73,22 @@ function getDeploymentDomain() {
   process.exit(1);
 }
 
+function getSignalUrl(domain) {
+  const configuredUrl = process.env.EXPO_PUBLIC_SIGNAL_URL?.trim();
+  if (configuredUrl) {
+    const parsed = new URL(configuredUrl);
+    if (parsed.protocol !== "wss:") {
+      throw new Error("EXPO_PUBLIC_SIGNAL_URL must use the wss:// protocol");
+    }
+    if (parsed.pathname === "/" || parsed.pathname === "") {
+      parsed.pathname = "/api/signal";
+    }
+    return parsed.toString();
+  }
+
+  return `wss://${domain}/api/signal`;
+}
+
 function prepareDirectories(timestamp) {
   console.log("Preparing build directories...");
 
@@ -127,7 +143,7 @@ function getExpoPublicReplId() {
   return process.env.REPL_ID || process.env.EXPO_PUBLIC_REPL_ID;
 }
 
-async function startMetro(expoPublicDomain, expoPublicReplId) {
+async function startMetro(expoPublicDomain, expoPublicReplId, signalUrl) {
   const isRunning = await checkMetroHealth();
   if (isRunning) {
     console.log("Metro already running");
@@ -136,9 +152,11 @@ async function startMetro(expoPublicDomain, expoPublicReplId) {
 
   console.log("Starting Metro...");
   console.log(`Setting EXPO_PUBLIC_DOMAIN=${expoPublicDomain}`);
+  console.log(`Setting EXPO_PUBLIC_SIGNAL_URL=${signalUrl}`);
   const env = {
     ...process.env,
     EXPO_PUBLIC_DOMAIN: expoPublicDomain,
+    EXPO_PUBLIC_SIGNAL_URL: signalUrl,
     EXPO_PUBLIC_REPL_ID: expoPublicReplId,
   };
 
@@ -511,6 +529,7 @@ async function main() {
   setupSignalHandlers();
 
   const domain = getDeploymentDomain();
+  const signalUrl = getSignalUrl(domain);
   const expoPublicReplId = getExpoPublicReplId();
   const baseUrl = `https://${domain}`;
   const timestamp = `${Date.now()}-${process.pid}`;
@@ -518,7 +537,7 @@ async function main() {
   prepareDirectories(timestamp);
   clearMetroCache();
 
-  await startMetro(domain, expoPublicReplId);
+  await startMetro(domain, expoPublicReplId, signalUrl);
 
   const downloadTimeout = 600000;
   const downloadPromise = downloadBundlesAndManifests(timestamp);
