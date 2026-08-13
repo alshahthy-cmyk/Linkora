@@ -7,6 +7,7 @@ import React, {
   useState,
 } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { resolveSignalUrl } from "@/lib/signal-url";
 
 export interface Message {
   id: string;
@@ -53,6 +54,7 @@ interface LinkoraContextValue {
   userName: string | null;
   isReady: boolean;
   isConnected: boolean;
+  connectionError: string | null;
   conversations: Conversation[];
   incomingCall: IncomingCall | null;
   activeCall: string | null;
@@ -93,6 +95,7 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
   const [userName, setUserName] = useState<string | null>(null);
   const [isReady, setIsReady] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
   const [activeCall, setActiveCall] = useState<string | null>(null);
@@ -276,16 +279,20 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
     const currentUserName = userNameRef.current;
     if (!currentUserId || !currentUserName) return;
 
-    const domain = process.env["EXPO_PUBLIC_DOMAIN"] ?? "localhost";
-    const protocol = domain.includes("localhost") ? "ws" : "wss";
-    const url = `${protocol}://${domain}/api/signal`;
+    const signal = resolveSignalUrl();
+    if (!signal.url) {
+      setIsConnected(false);
+      setConnectionError(signal.error);
+      return;
+    }
 
     try {
-      const ws = new WebSocket(url);
+      const ws = new WebSocket(signal.url);
       wsRef.current = ws;
 
       ws.onopen = () => {
         setIsConnected(true);
+        setConnectionError(null);
         reconnectAttemptsRef.current = 0;
         ws.send(
           JSON.stringify({
@@ -322,9 +329,13 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
       };
 
       ws.onerror = () => {
+        setConnectionError("Unable to reach the messaging service. Retrying...");
         ws.close();
       };
-    } catch {}
+    } catch {
+      setIsConnected(false);
+      setConnectionError("Unable to start the messaging connection. Retrying...");
+    }
   }, []);
 
   useEffect(() => {
@@ -509,6 +520,7 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
         userName,
         isReady,
         isConnected,
+        connectionError,
         conversations,
         incomingCall,
         activeCall,

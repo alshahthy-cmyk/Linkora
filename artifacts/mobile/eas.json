@@ -7,8 +7,18 @@
     "preview": {
       "node": "20.18.0",
       "pnpm": "9.15.0",
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "preview"
+      },
       "android": {
         "buildType": "apk"
+      }
+    },
+    "production": {
+      "node": "20.18.0",
+      "pnpm": "9.15.0",
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "production"
       }
     }
   }

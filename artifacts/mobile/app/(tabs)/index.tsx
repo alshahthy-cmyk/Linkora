@@ -21,7 +21,8 @@ import { useColors } from "@/hooks/useColors";
 export default function ChatsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { conversations, isConnected, sendMessage } = useLinkoraContext();
+  const { conversations, isConnected, connectionError, sendMessage } =
+    useLinkoraContext();
   const [addModalVisible, setAddModalVisible] = useState(false);
 
   const sorted = [...conversations].sort(
@@ -84,6 +85,20 @@ export default function ChatsScreen() {
           <Feather name="edit" size={18} color={colors.primary} />
         </Pressable>
       </View>
+
+      {connectionError ? (
+        <View
+          style={[
+            styles.connectionNotice,
+            { backgroundColor: colors.destructive + "18" },
+          ]}
+        >
+          <Feather name="wifi-off" size={15} color={colors.destructive} />
+          <Text style={[styles.connectionNoticeText, { color: colors.destructive }]}>
+            {connectionError}
+          </Text>
+        </View>
+      ) : null}
 
       <FlatList<Conversation>
         data={sorted}
@@ -180,6 +195,23 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
+  },
+  connectionNotice: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 2,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  connectionNoticeText: {
+    flex: 1,
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    lineHeight: 17,
   },
   list: {
     flexGrow: 1,
