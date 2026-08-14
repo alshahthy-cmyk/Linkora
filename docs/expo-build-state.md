@@ -49,3 +49,17 @@ The user submitted the GitHub build with the full `70ea070b6ade98569ffc2a61eab8c
 The build installed dependencies successfully, including the new pre-install hook. It then failed while resolving build configuration with `EAS project not configured`. The mobile `app.json` already specifies the Expo owner (`alshahthyameer`), but it lacks the immutable EAS project identifier under `expo.extra.eas.projectId`. The required correction is to initialize or retrieve the existing EAS project identifier for `@alshahthyameer/mobile`, add it to `app.json`, verify that Expo resolves the configuration, and then rebuild.
 
 The existing project's Expo **Details** panel confirms that its immutable EAS project identifier is `601926ee-67ef-4158-8a3f-f3333dc1a298`. This value will be placed exactly at `expo.extra.eas.projectId`; no new Expo project will be created.
+
+## Current feature-expansion build
+
+في 14 أغسطس 2026، ظهرت في صفحة Expo عملية بناء Android جديدة من الملف `preview` ومن Git commit `8050cc1` المرتبط بتوسعة الرسائل والوسائط وWebRTC. كانت العملية قيد التنفيذ عند آخر فحص ويجب متابعة نتيجتها قبل تسليم رابط التثبيت. اجتاز خادم الإشارة المنشور بعد التحديث اختبار تمرير الرسائل وإشارة WebRTC عبر `wss://workspaceapi-server-production-5881.up.railway.app/api/signal`.
+
+رقم عملية البناء هو `7f1ddbb2-d58e-4a34-a9f3-6c34f4133b3f`، ورابط المتابعة هو https://expo.dev/accounts/alshahthyameer/projects/mobile/builds/7f1ddbb2-d58e-4a34-a9f3-6c34f4133b3f. عند أحدث فحص، نجحت خطوات تثبيت الحزم وتهيئة Expo والحزم الأصلية وBundling JavaScript، وكانت Gradle تترجم مكونات Android الأصلية، بما فيها مكونات WebRTC الجديدة. لم يظهر خطأ وقتها.
+
+استمر Gradle إلى ما بعد 8 دقائق و52 ثانية. ظهر أن `react-native-webrtc` و`react-native-incall-manager` اجتازا مراحل المعالجة وإعداد فحص الإصدار، ولم تظهر أخطاء منهما. أحدث السجل يتضمن تحذيرات Kotlin بشأن رموز قديمة داخل Expo SDK 54 فقط؛ وهي تحذيرات غير مانعة ولم يعلن البناء فشلاً. بقيت الحالة `Build in progress` في وقت التسجيل.
+
+عند 13 دقيقة و42 ثانية، اكتملت بنجاح خطوة Gradle (12 دقيقة و27 ثانية) وخطوة Gradle build profile. أنشأ Expo ملف Android في المسار `artifacts/mobile/android/app/build/outputs/apk/release/app-release.apk` بحجم 136 MB، ثم بدأ رفعه. ظلت الحالة `Build in progress` فقط لأن رفع الأرشيف لم يكتمل بعد؛ ولا يوجد خطأ في السجل.
+
+## APK الموسع الناجح
+
+اكتمل بنجاح البناء `7f1ddbb2-d58e-4a34-a9f3-6c34f4133b3f` في 14 أغسطس 2026. البناء مرتبط بالالتزام `8050cc1` بعنوان `feat: expand messaging media and WebRTC calls`، ويستخدم ملف `preview` وبيئة `production`. الناتج APK بحجم 136 MB، وتظهر له حالة `Finished` وزر `Download` في صفحة Expo. تبقى صلاحية التنزيل 29 يوماً من وقت البناء.

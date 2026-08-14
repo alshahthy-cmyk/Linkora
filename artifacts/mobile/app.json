@@ -3,7 +3,7 @@
     "name": "Linkora",
     "slug": "mobile",
     "owner": "alshahthyameer",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "mobile",
@@ -19,6 +19,7 @@
     },
     "android": {
       "package": "com.alshahthyameer.linkora",
+      "versionCode": 2,
       "softwareKeyboardLayoutMode": "pan"
     },
     "web": {
