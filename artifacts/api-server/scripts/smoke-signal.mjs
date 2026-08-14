@@ -74,6 +74,30 @@ try {
   );
 
   await relayed;
+
+  const webRtcOfferRelayed = waitForMessage(
+    bob,
+    (message) =>
+      message.type === "relay" &&
+      message.from === "ALICE001" &&
+      message.payload?.type === "webrtc-offer" &&
+      message.payload?.callId === "call-smoke-test" &&
+      message.payload?.description?.type === "offer",
+  );
+
+  alice.send(
+    JSON.stringify({
+      type: "send",
+      to: "BOB00001",
+      payload: {
+        type: "webrtc-offer",
+        callId: "call-smoke-test",
+        description: { type: "offer", sdp: "signal-only-smoke-test" },
+      },
+    }),
+  );
+
+  await webRtcOfferRelayed;
   console.log(`Signal smoke test passed: ${endpoint}`);
 } finally {
   alice.close();

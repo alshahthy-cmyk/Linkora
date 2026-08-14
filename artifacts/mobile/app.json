@@ -33,11 +33,24 @@
       ],
       "expo-font",
       "expo-web-browser",
+      "@config-plugins/react-native-webrtc",
       [
         "expo-image-picker",
         {
           "photosPermission": "Allow Linkora to access your photos to share images.",
-          "cameraPermission": "Allow Linkora to access your camera for video calls."
+          "cameraPermission": "Allow Linkora to access your camera to capture photos and videos."
+        }
+      ],
+      [
+        "expo-video",
+        {
+          "supportsPictureInPicture": true
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow Linkora to access your microphone to record voice messages and make calls."
         }
       ]
     ],

@@ -7,24 +7,50 @@ import React, {
   useState,
 } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import InCallManager from "react-native-incall-manager";
+import {
+  MediaStream,
+  mediaDevices,
+  RTCIceCandidate,
+  RTCPeerConnection,
+  RTCSessionDescription,
+} from "react-native-webrtc";
+
 import { resolveSignalUrl } from "@/lib/signal-url";
+
+export type MessageType =
+  | "text"
+  | "image"
+  | "video"
+  | "file"
+  | "voice"
+  | "call_started"
+  | "call_ended"
+  | "call_missed";
+
+export type MessageStatus = "sending" | "sent" | "delivered" | "read";
+export type CallMode = "audio" | "video";
+
+export interface ReplyReference {
+  id: string;
+  content: string;
+  type: MessageType;
+  fromMe: boolean;
+}
 
 export interface Message {
   id: string;
-  type:
-    | "text"
-    | "image"
-    | "file"
-    | "call_started"
-    | "call_ended"
-    | "call_missed";
+  type: MessageType;
   content: string;
   fileName?: string;
   fileSize?: number;
   mimeType?: string;
+  durationMs?: number;
   fromMe: boolean;
   timestamp: number;
-  status: "sending" | "sent" | "delivered";
+  status: MessageStatus;
+  replyTo?: ReplyReference;
+  deletedAt?: number;
 }
 
 export interface Conversation {
@@ -32,6 +58,8 @@ export interface Conversation {
   peerName: string;
   messages: Message[];
   isOnline: boolean;
+  lastSeenAt?: number;
+  isTyping?: boolean;
   lastActivity: number;
   unreadCount: number;
 }
@@ -39,14 +67,18 @@ export interface Conversation {
 export interface IncomingCall {
   peerId: string;
   peerName: string;
+  callId: string;
+  mode: CallMode;
 }
 
-interface SendMessageInput {
-  type: "text" | "image" | "file";
+export interface SendMessageInput {
+  type: "text" | "image" | "video" | "file" | "voice";
   content: string;
   fileName?: string;
   fileSize?: number;
   mimeType?: string;
+  durationMs?: number;
+  replyTo?: ReplyReference;
 }
 
 interface LinkoraContextValue {
@@ -58,16 +90,21 @@ interface LinkoraContextValue {
   conversations: Conversation[];
   incomingCall: IncomingCall | null;
   activeCall: string | null;
+  activeCallMode: CallMode | null;
+  localStream: MediaStream | null;
+  remoteStream: MediaStream | null;
+  isMuted: boolean;
+  isSpeakerOn: boolean;
   setupUser: (name: string) => Promise<void>;
-  sendMessage: (
-    peerId: string,
-    peerName: string,
-    msg: SendMessageInput,
-  ) => void;
-  startCall: (peerId: string) => void;
+  sendMessage: (peerId: string, peerName: string, msg: SendMessageInput) => void;
+  sendTyping: (peerId: string, isTyping: boolean) => void;
+  deleteMessage: (peerId: string, messageId: string) => void;
+  startCall: (peerId: string, mode?: CallMode) => void;
   acceptCall: () => void;
   rejectCall: () => void;
   endCall: () => void;
+  setCallMuted: (muted: boolean) => void;
+  setSpeakerEnabled: (enabled: boolean) => void;
   markAsRead: (peerId: string) => void;
   deleteConversation: (peerId: string) => void;
   updatePeerName: (peerId: string, name: string) => void;
@@ -75,17 +112,29 @@ interface LinkoraContextValue {
 
 const USER_KEY = "linkora_user";
 const CONVS_KEY = "linkora_conversations";
+const TYPING_TIMEOUT_MS = 4000;
+
+// Public STUN makes direct connections possible. A TURN service must be supplied
+// for reliable calls when either participant is behind a restrictive network.
+// The credentials used in a mobile build are visible to its users, so production
+// deployments should use short-lived credentials issued by an authenticated API.
+const turnUrl = process.env.EXPO_PUBLIC_TURN_URL;
+const turnUsername = process.env.EXPO_PUBLIC_TURN_USERNAME;
+const turnCredential = process.env.EXPO_PUBLIC_TURN_CREDENTIAL;
+const ICE_SERVERS = [
+  { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+  ...(turnUrl && turnUsername && turnCredential
+    ? [{ urls: turnUrl, username: turnUsername, credential: turnCredential }]
+    : []),
+];
 
 function generateUserId(): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  return Array.from(
-    { length: 8 },
-    () => chars[Math.floor(Math.random() * chars.length)],
-  ).join("");
+  return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 }
 
-function generateMsgId(): string {
-  return Date.now().toString() + Math.random().toString(36).substr(2, 9);
+function generateId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
 const LinkoraContext = createContext<LinkoraContextValue | null>(null);
@@ -99,16 +148,25 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
   const [activeCall, setActiveCall] = useState<string | null>(null);
+  const [activeCallMode, setActiveCallMode] = useState<CallMode | null>(null);
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isSpeakerOn, setIsSpeakerOn] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
+  const typingTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const userIdRef = useRef<string | null>(null);
   const userNameRef = useRef<string | null>(null);
   const incomingCallRef = useRef<IncomingCall | null>(null);
   const activeCallRef = useRef<string | null>(null);
+  const activeCallIdRef = useRef<string | null>(null);
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
 
   useEffect(() => {
     incomingCallRef.current = incomingCall;
@@ -118,35 +176,47 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
     activeCallRef.current = activeCall;
   }, [activeCall]);
 
-  const saveConversations = useCallback(async (convs: Conversation[]) => {
+  const saveConversations = useCallback(async (next: Conversation[]) => {
     try {
-      await AsyncStorage.setItem(CONVS_KEY, JSON.stringify(convs));
-    } catch {}
+      await AsyncStorage.setItem(CONVS_KEY, JSON.stringify(next));
+    } catch {
+      // Local persistence must never block chat interactions.
+    }
   }, []);
+
+  const updateConversations = useCallback(
+    (updater: (previous: Conversation[]) => Conversation[]) => {
+      setConversations((previous) => {
+        const next = updater(previous);
+        void saveConversations(next);
+        return next;
+      });
+    },
+    [saveConversations],
+  );
 
   useEffect(() => {
     async function load() {
       try {
-        const [userRaw, convsRaw] = await Promise.all([
+        const [userRaw, conversationsRaw] = await Promise.all([
           AsyncStorage.getItem(USER_KEY),
           AsyncStorage.getItem(CONVS_KEY),
         ]);
 
         if (userRaw) {
-          const { id, name } = JSON.parse(userRaw) as {
-            id: string;
-            name: string;
-          };
-          setUserId(id);
-          setUserName(name);
-          userIdRef.current = id;
-          userNameRef.current = name;
+          const savedUser = JSON.parse(userRaw) as { id: string; name: string };
+          setUserId(savedUser.id);
+          setUserName(savedUser.name);
+          userIdRef.current = savedUser.id;
+          userNameRef.current = savedUser.name;
         }
 
-        if (convsRaw) {
-          const parsed = JSON.parse(convsRaw) as Conversation[];
-          setConversations(parsed.map((c) => ({ ...c, isOnline: false })));
+        if (conversationsRaw) {
+          const savedConversations = JSON.parse(conversationsRaw) as Conversation[];
+          setConversations(savedConversations.map((conversation) => ({ ...conversation, isOnline: false, isTyping: false })));
         }
+      } catch {
+        // Start with an empty local history if a stale cache cannot be decoded.
       } finally {
         setIsReady(true);
       }
@@ -154,131 +224,284 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
     void load();
   }, []);
 
-  const handleMessage = useRef<
-    ((msg: Record<string, unknown>) => void) | null
-  >(null);
+  const sendRelay = useCallback((peerId: string, payload: Record<string, unknown>) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify({ type: "send", to: peerId, payload }));
+    return true;
+  }, []);
 
   const addSystemMessage = useCallback(
-    (
-      peerId: string,
-      peerName: string,
-      type: "call_started" | "call_ended" | "call_missed",
-    ) => {
-      const sysMsg: Message = {
-        id: generateMsgId(),
-        type,
-        content: "",
-        fromMe: false,
-        timestamp: Date.now(),
-        status: "delivered",
-      };
-
-      setConversations((prev) => {
-        const idx = prev.findIndex((c) => c.peerId === peerId);
-        let updated: Conversation[];
-        if (idx >= 0) {
-          updated = prev.map((c, i) =>
-            i === idx
-              ? {
-                  ...c,
-                  messages: [...c.messages, sysMsg],
-                  lastActivity: sysMsg.timestamp,
-                }
-              : c,
-          );
-        } else {
-          updated = [
-            ...prev,
-            {
-              peerId,
-              peerName,
-              messages: [sysMsg],
-              isOnline: false,
-              lastActivity: sysMsg.timestamp,
-              unreadCount: 0,
-            },
-          ];
+    (peerId: string, peerName: string, type: "call_started" | "call_ended" | "call_missed") => {
+      const message: Message = { id: generateId(), type, content: "", fromMe: false, timestamp: Date.now(), status: "delivered" };
+      updateConversations((previous) => {
+        const index = previous.findIndex((conversation) => conversation.peerId === peerId);
+        if (index < 0) {
+          return [...previous, { peerId, peerName, messages: [message], isOnline: true, lastActivity: message.timestamp, unreadCount: 0 }];
         }
-        void saveConversations(updated);
-        return updated;
+        return previous.map((conversation, itemIndex) => itemIndex === index
+          ? { ...conversation, peerName, messages: [...conversation.messages, message], lastActivity: message.timestamp }
+          : conversation);
       });
     },
-    [saveConversations],
+    [updateConversations],
   );
 
-  useEffect(() => {
-    handleMessage.current = (msg: Record<string, unknown>) => {
-      if (msg["type"] === "relay") {
-        const from = msg["from"] as string;
-        const fromName = msg["fromName"] as string;
-        const payload = msg["payload"] as Record<string, unknown>;
+  const closePeerConnection = useCallback(() => {
+    const connection = peerConnectionRef.current;
+    if (connection) {
+      connection.onicecandidate = null;
+      connection.ontrack = null;
+      connection.onconnectionstatechange = null;
+      connection.close();
+    }
+    peerConnectionRef.current = null;
+    localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    remoteStreamRef.current?.getTracks().forEach((track) => track.stop());
+    localStreamRef.current = null;
+    remoteStreamRef.current = null;
+    pendingCandidatesRef.current = [];
+    activeCallIdRef.current = null;
+    InCallManager.stop();
+    setLocalStream(null);
+    setRemoteStream(null);
+    setActiveCall(null);
+    setActiveCallMode(null);
+    setIsMuted(false);
+    setIsSpeakerOn(false);
+  }, []);
 
-        if (payload["type"] === "message") {
-          const incomingMsg = { ...(payload["message"] as Message) };
-          incomingMsg.fromMe = false;
-          incomingMsg.status = "delivered";
+  const flushPendingCandidates = useCallback(async () => {
+    const connection = peerConnectionRef.current;
+    if (!connection || !connection.remoteDescription) return;
+    const pending = pendingCandidatesRef.current.splice(0);
+    await Promise.all(pending.map((candidate) => connection.addIceCandidate(new RTCIceCandidate(candidate))));
+  }, []);
 
-          setConversations((prev) => {
-            const idx = prev.findIndex((c) => c.peerId === from);
-            let updated: Conversation[];
+  const preparePeerConnection = useCallback(async (
+    peerId: string,
+    mode: CallMode,
+    callId: string,
+  ) => {
+    const stream = await mediaDevices.getUserMedia({ audio: true, video: mode === "video" });
+    localStreamRef.current = stream;
+    setLocalStream(stream);
+    setActiveCall(peerId);
+    setActiveCallMode(mode);
+    activeCallIdRef.current = callId;
+    setIsMuted(false);
+    setIsSpeakerOn(false);
+    InCallManager.start({ media: mode });
+    InCallManager.setForceSpeakerphoneOn(false);
 
-            if (idx >= 0) {
-              updated = prev.map((c, i) =>
-                i === idx
-                  ? {
-                      ...c,
-                      peerName: fromName,
-                      messages: [...c.messages, incomingMsg],
-                      lastActivity: incomingMsg.timestamp,
-                      unreadCount: c.unreadCount + 1,
-                    }
-                  : c,
-              );
-            } else {
-              updated = [
-                ...prev,
-                {
-                  peerId: from,
-                  peerName: fromName,
-                  messages: [incomingMsg],
-                  isOnline: true,
-                  lastActivity: incomingMsg.timestamp,
-                  unreadCount: 1,
-                },
-              ];
-            }
-
-            void saveConversations(updated);
-            return updated;
-          });
-        } else if (payload["type"] === "call-request") {
-          setIncomingCall({ peerId: from, peerName: fromName });
-        } else if (payload["type"] === "call-accept") {
-          // Call accepted by remote
-        } else if (payload["type"] === "call-reject") {
-          setActiveCall(null);
-          addSystemMessage(from, fromName, "call_missed");
-        } else if (payload["type"] === "call-end") {
-          setActiveCall(null);
-          setIncomingCall(null);
-          addSystemMessage(from, fromName, "call_ended");
-        }
-      } else if (msg["type"] === "peer-offline") {
-        const offlinePeerId = msg["peerId"] as string;
-        setConversations((prev) =>
-          prev.map((c) =>
-            c.peerId === offlinePeerId ? { ...c, isOnline: false } : c,
-          ),
-        );
+    const connection = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    peerConnectionRef.current = connection;
+    stream.getTracks().forEach((track) => connection.addTrack(track, stream));
+    connection.onicecandidate = (event: { candidate: RTCIceCandidate | null }) => {
+      if (!event.candidate) return;
+      const candidate = event.candidate.toJSON ? event.candidate.toJSON() : event.candidate;
+      sendRelay(peerId, { type: "webrtc-ice", callId, candidate: candidate as unknown as Record<string, unknown> });
+    };
+    connection.ontrack = (event: { streams: MediaStream[] }) => {
+      const nextRemote = event.streams[0];
+      if (nextRemote) {
+        remoteStreamRef.current = nextRemote;
+        setRemoteStream(nextRemote);
       }
     };
-  }, [saveConversations, addSystemMessage]);
+    connection.onconnectionstatechange = () => {
+      if (connection.connectionState === "failed") {
+        setConnectionError("The call connection failed. Check the network and try again.");
+        closePeerConnection();
+      }
+    };
+    return connection;
+  }, [closePeerConnection, sendRelay]);
+
+  const handleMessage = useRef<((message: Record<string, unknown>) => void) | null>(null);
+
+  useEffect(() => {
+    const setTypingState = (peerId: string, isTyping: boolean) => {
+      const existingTimer = typingTimeoutsRef.current.get(peerId);
+      if (existingTimer) clearTimeout(existingTimer);
+      updateConversations((previous) => previous.map((conversation) => conversation.peerId === peerId ? { ...conversation, isTyping } : conversation));
+      if (isTyping) {
+        const timeout = setTimeout(() => {
+          updateConversations((previous) => previous.map((conversation) => conversation.peerId === peerId ? { ...conversation, isTyping: false } : conversation));
+          typingTimeoutsRef.current.delete(peerId);
+        }, TYPING_TIMEOUT_MS);
+        typingTimeoutsRef.current.set(peerId, timeout);
+      }
+    };
+
+    const handleWebRtcOffer = async (from: string, payload: Record<string, unknown>) => {
+      const connection = peerConnectionRef.current;
+      const description = payload["description"] as { sdp: string; type: string | null } | undefined;
+      if (!connection || !description) return;
+      await connection.setRemoteDescription(new RTCSessionDescription(description));
+      await flushPendingCandidates();
+      const answer = await connection.createAnswer();
+      await connection.setLocalDescription(answer);
+      sendRelay(from, { type: "webrtc-answer", callId: payload["callId"], description: connection.localDescription as unknown as Record<string, unknown> });
+    };
+
+    const handleWebRtcAnswer = async (payload: Record<string, unknown>) => {
+      const connection = peerConnectionRef.current;
+      const description = payload["description"] as { sdp: string; type: string | null } | undefined;
+      if (!connection || !description) return;
+      await connection.setRemoteDescription(new RTCSessionDescription(description));
+      await flushPendingCandidates();
+    };
+
+    const handleWebRtcCandidate = async (payload: Record<string, unknown>) => {
+      const candidate = payload["candidate"] as RTCIceCandidateInit | undefined;
+      const connection = peerConnectionRef.current;
+      if (!candidate || !connection) return;
+      if (connection.remoteDescription) {
+        await connection.addIceCandidate(new RTCIceCandidate(candidate));
+      } else {
+        pendingCandidatesRef.current.push(candidate);
+      }
+    };
+
+    handleMessage.current = (message) => {
+      if (message["type"] === "registered") {
+        const peers = Array.isArray(message["peers"]) ? message["peers"] : [];
+        const onlineIds = new Set(peers.map((peer) => (peer as Record<string, unknown>)["peerId"]).filter(Boolean));
+        updateConversations((previous) => previous.map((conversation) => ({ ...conversation, isOnline: onlineIds.has(conversation.peerId) })));
+        return;
+      }
+
+      if (message["type"] === "presence") {
+        const peerId = message["peerId"] as string;
+        const online = Boolean(message["online"]);
+        const at = typeof message["at"] === "number" ? message["at"] : Date.now();
+        if (!peerId) return;
+        updateConversations((previous) => previous.map((conversation) => conversation.peerId === peerId
+          ? { ...conversation, isOnline: online, lastSeenAt: online ? conversation.lastSeenAt : at, isTyping: online ? conversation.isTyping : false }
+          : conversation));
+        return;
+      }
+
+      if (message["type"] === "payload-too-large") {
+        setConnectionError("The selected attachment is too large to send.");
+        return;
+      }
+
+      if (message["type"] === "peer-offline") {
+        const peerId = message["peerId"] as string;
+        updateConversations((previous) => previous.map((conversation) => conversation.peerId === peerId ? { ...conversation, isOnline: false, lastSeenAt: Date.now() } : conversation));
+        return;
+      }
+
+      if (message["type"] !== "relay") return;
+      const from = message["from"] as string;
+      const fromName = (message["fromName"] as string) || from;
+      const payload = message["payload"] as Record<string, unknown>;
+      if (!from || !payload) return;
+
+      if (payload["type"] === "message") {
+        const rawMessage = payload["message"] as Message;
+        if (!rawMessage?.id) return;
+        const incoming: Message = { ...rawMessage, fromMe: false, status: "delivered" };
+        updateConversations((previous) => {
+          const index = previous.findIndex((conversation) => conversation.peerId === from);
+          if (index < 0) return [...previous, { peerId: from, peerName: fromName, messages: [incoming], isOnline: true, lastActivity: incoming.timestamp, unreadCount: 1 }];
+          return previous.map((conversation, itemIndex) => itemIndex === index
+            ? { ...conversation, peerName: fromName, isOnline: true, messages: [...conversation.messages, incoming], lastActivity: incoming.timestamp, unreadCount: conversation.unreadCount + 1 }
+            : conversation);
+        });
+        sendRelay(from, { type: "message-received", messageId: incoming.id });
+        return;
+      }
+
+      if (payload["type"] === "message-received" || payload["type"] === "message-read") {
+        const messageId = payload["messageId"] as string;
+        const status: MessageStatus = payload["type"] === "message-read" ? "read" : "delivered";
+        if (!messageId) return;
+        updateConversations((previous) => previous.map((conversation) => conversation.peerId === from
+          ? { ...conversation, messages: conversation.messages.map((item) => item.id === messageId && item.fromMe ? { ...item, status } : item) }
+          : conversation));
+        return;
+      }
+
+      if (payload["type"] === "message-delete") {
+        const messageId = payload["messageId"] as string;
+        if (!messageId) return;
+        updateConversations((previous) => previous.map((conversation) => conversation.peerId === from
+          ? { ...conversation, messages: conversation.messages.map((item) => item.id === messageId ? { ...item, content: "", fileName: undefined, deletedAt: Date.now() } : item) }
+          : conversation));
+        return;
+      }
+
+      if (payload["type"] === "typing") {
+        setTypingState(from, Boolean(payload["isTyping"]));
+        return;
+      }
+
+      if (payload["type"] === "call-request") {
+        const mode: CallMode = payload["mode"] === "video" ? "video" : "audio";
+        setIncomingCall({ peerId: from, peerName: fromName, callId: (payload["callId"] as string) || generateId(), mode });
+        return;
+      }
+
+      if (payload["type"] === "call-accept") {
+        void (async () => {
+          const connection = peerConnectionRef.current;
+          if (!connection || activeCallIdRef.current !== payload["callId"]) return;
+          try {
+            const offer = await connection.createOffer();
+            await connection.setLocalDescription(offer);
+            sendRelay(from, { type: "webrtc-offer", callId: payload["callId"], description: connection.localDescription as unknown as Record<string, unknown> });
+          } catch {
+            setConnectionError("Unable to start the call. Please try again.");
+            closePeerConnection();
+          }
+        })();
+        return;
+      }
+
+      if (payload["type"] === "webrtc-offer") {
+        void handleWebRtcOffer(from, payload).catch(() => {
+          setConnectionError("Unable to answer the call.");
+          closePeerConnection();
+        });
+        return;
+      }
+
+      if (payload["type"] === "webrtc-answer") {
+        void handleWebRtcAnswer(payload).catch(() => {
+          setConnectionError("Unable to complete the call connection.");
+          closePeerConnection();
+        });
+        return;
+      }
+
+      if (payload["type"] === "webrtc-ice") {
+        void handleWebRtcCandidate(payload).catch(() => {
+          setConnectionError("Network details for the call could not be applied.");
+        });
+        return;
+      }
+
+      if (payload["type"] === "call-reject") {
+        addSystemMessage(from, fromName, "call_missed");
+        closePeerConnection();
+        return;
+      }
+
+      if (payload["type"] === "call-end") {
+        addSystemMessage(from, fromName, "call_ended");
+        setIncomingCall(null);
+        closePeerConnection();
+      }
+    };
+  }, [addSystemMessage, closePeerConnection, flushPendingCandidates, sendRelay, updateConversations]);
 
   const connectWebSocket = useCallback(() => {
     const currentUserId = userIdRef.current;
     const currentUserName = userNameRef.current;
     if (!currentUserId || !currentUserName) return;
-
     const signal = resolveSignalUrl();
     if (!signal.url) {
       setIsConnected(false);
@@ -289,45 +512,29 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
     try {
       const ws = new WebSocket(signal.url);
       wsRef.current = ws;
-
       ws.onopen = () => {
         setIsConnected(true);
         setConnectionError(null);
         reconnectAttemptsRef.current = 0;
-        ws.send(
-          JSON.stringify({
-            type: "register",
-            userId: currentUserId,
-            userName: currentUserName,
-          }),
-        );
+        ws.send(JSON.stringify({ type: "register", userId: currentUserId, userName: currentUserName }));
       };
-
       ws.onmessage = (event) => {
         try {
-          const msg = JSON.parse(event.data as string) as Record<
-            string,
-            unknown
-          >;
-          handleMessage.current?.(msg);
-        } catch {}
+          handleMessage.current?.(JSON.parse(event.data as string) as Record<string, unknown>);
+        } catch {
+          // Ignore malformed signal packets.
+        }
       };
-
       ws.onclose = () => {
         setIsConnected(false);
         wsRef.current = null;
-        if (reconnectTimeoutRef.current)
-          clearTimeout(reconnectTimeoutRef.current);
-        const delay = Math.min(
-          1000 * Math.pow(2, reconnectAttemptsRef.current),
-          30000,
-        );
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+        const delay = Math.min(1000 * 2 ** reconnectAttemptsRef.current, 30000);
         reconnectAttemptsRef.current += 1;
         reconnectTimeoutRef.current = setTimeout(() => {
           if (userIdRef.current) connectWebSocket();
         }, delay);
       };
-
       ws.onerror = () => {
         setConnectionError("Unable to reach the messaging service. Retrying...");
         ws.close();
@@ -339,15 +546,14 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (userId && userName) {
-      connectWebSocket();
-    }
+    if (userId && userName) connectWebSocket();
     return () => {
-      if (reconnectTimeoutRef.current)
-        clearTimeout(reconnectTimeoutRef.current);
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      typingTimeoutsRef.current.forEach((timeout) => clearTimeout(timeout));
       wsRef.current?.close();
+      closePeerConnection();
     };
-  }, [userId, userName, connectWebSocket]);
+  }, [closePeerConnection, connectWebSocket, userId, userName]);
 
   const setupUser = useCallback(async (name: string) => {
     const id = generateUserId();
@@ -358,191 +564,139 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
     userNameRef.current = name;
   }, []);
 
-  const sendMessage = useCallback(
-    (peerId: string, peerName: string, msgInput: SendMessageInput) => {
-      const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const sendMessage = useCallback((peerId: string, peerName: string, msgInput: SendMessageInput) => {
+    const message: Message = { id: generateId(), ...msgInput, fromMe: true, timestamp: Date.now(), status: "sending" };
+    updateConversations((previous) => {
+      const index = previous.findIndex((conversation) => conversation.peerId === peerId);
+      if (index < 0) return [...previous, { peerId, peerName, messages: [message], isOnline: true, lastActivity: message.timestamp, unreadCount: 0 }];
+      return previous.map((conversation, itemIndex) => itemIndex === index ? { ...conversation, messages: [...conversation.messages, message], lastActivity: message.timestamp } : conversation);
+    });
+    if (sendRelay(peerId, { type: "message", message })) {
+      updateConversations((previous) => previous.map((conversation) => conversation.peerId === peerId
+        ? { ...conversation, messages: conversation.messages.map((item) => item.id === message.id ? { ...item, status: "sent" } : item) }
+        : conversation));
+    } else {
+      setConnectionError("Connect to the messaging service before sending a message.");
+    }
+  }, [sendRelay, updateConversations]);
 
-      const msg: Message = {
-        id: generateMsgId(),
-        ...msgInput,
-        fromMe: true,
-        timestamp: Date.now(),
-        status: "sent",
-      };
+  const sendTyping = useCallback((peerId: string, isTyping: boolean) => {
+    sendRelay(peerId, { type: "typing", isTyping });
+  }, [sendRelay]);
 
-      ws.send(
-        JSON.stringify({
-          type: "send",
-          to: peerId,
-          payload: { type: "message", message: msg },
-        }),
-      );
+  const deleteMessage = useCallback((peerId: string, messageId: string) => {
+    updateConversations((previous) => previous.map((conversation) => conversation.peerId === peerId
+      ? { ...conversation, messages: conversation.messages.map((message) => message.id === messageId ? { ...message, content: "", fileName: undefined, deletedAt: Date.now() } : message) }
+      : conversation));
+    sendRelay(peerId, { type: "message-delete", messageId });
+  }, [sendRelay, updateConversations]);
 
-      setConversations((prev) => {
-        const idx = prev.findIndex((c) => c.peerId === peerId);
-        let updated: Conversation[];
-
-        if (idx >= 0) {
-          updated = prev.map((c, i) =>
-            i === idx
-              ? {
-                  ...c,
-                  messages: [...c.messages, msg],
-                  lastActivity: msg.timestamp,
-                }
-              : c,
-          );
-        } else {
-          updated = [
-            ...prev,
-            {
-              peerId,
-              peerName,
-              messages: [msg],
-              isOnline: true,
-              lastActivity: msg.timestamp,
-              unreadCount: 0,
-            },
-          ];
+  const startCall = useCallback((peerId: string, mode: CallMode = "audio") => {
+    const callId = generateId();
+    void (async () => {
+      try {
+        await preparePeerConnection(peerId, mode, callId);
+        if (!sendRelay(peerId, { type: "call-request", callId, mode })) {
+          closePeerConnection();
+          setConnectionError("The contact must be online before a call can start.");
         }
-
-        void saveConversations(updated);
-        return updated;
-      });
-    },
-    [saveConversations],
-  );
-
-  const startCall = useCallback((peerId: string) => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-    setActiveCall(peerId);
-    ws.send(
-      JSON.stringify({
-        type: "send",
-        to: peerId,
-        payload: { type: "call-request", fromName: userNameRef.current },
-      }),
-    );
-  }, []);
+      } catch {
+        closePeerConnection();
+        setConnectionError("Allow microphone and camera access before starting this call.");
+      }
+    })();
+  }, [closePeerConnection, preparePeerConnection, sendRelay]);
 
   const acceptCall = useCallback(() => {
-    const ws = wsRef.current;
     const call = incomingCallRef.current;
-    if (!ws || !call) return;
-
-    ws.send(
-      JSON.stringify({
-        type: "send",
-        to: call.peerId,
-        payload: { type: "call-accept" },
-      }),
-    );
-    setActiveCall(call.peerId);
-    setIncomingCall(null);
-  }, []);
+    if (!call) return;
+    void (async () => {
+      try {
+        await preparePeerConnection(call.peerId, call.mode, call.callId);
+        sendRelay(call.peerId, { type: "call-accept", callId: call.callId });
+        setIncomingCall(null);
+      } catch {
+        closePeerConnection();
+        setConnectionError("Allow microphone and camera access before answering this call.");
+      }
+    })();
+  }, [closePeerConnection, preparePeerConnection, sendRelay]);
 
   const rejectCall = useCallback(() => {
-    const ws = wsRef.current;
     const call = incomingCallRef.current;
-    if (!ws || !call) return;
-
-    ws.send(
-      JSON.stringify({
-        type: "send",
-        to: call.peerId,
-        payload: { type: "call-reject" },
-      }),
-    );
+    if (!call) return;
+    sendRelay(call.peerId, { type: "call-reject", callId: call.callId });
     setIncomingCall(null);
-  }, []);
+  }, [sendRelay]);
 
   const endCall = useCallback(() => {
-    const ws = wsRef.current;
-    const callPeerId = activeCallRef.current;
-    if (!ws || !callPeerId) return;
-
-    ws.send(
-      JSON.stringify({
-        type: "send",
-        to: callPeerId,
-        payload: { type: "call-end" },
-      }),
-    );
-
-    setActiveCall(null);
+    const peerId = activeCallRef.current;
+    const callId = activeCallIdRef.current;
+    if (peerId) sendRelay(peerId, { type: "call-end", callId });
     setIncomingCall(null);
+    closePeerConnection();
+  }, [closePeerConnection, sendRelay]);
+
+  const setCallMuted = useCallback((muted: boolean) => {
+    localStreamRef.current?.getAudioTracks().forEach((track) => { track.enabled = !muted; });
+    InCallManager.setMicrophoneMute(muted);
+    setIsMuted(muted);
   }, []);
 
-  const markAsRead = useCallback(
-    (peerId: string) => {
-      setConversations((prev) => {
-        const updated = prev.map((c) =>
-          c.peerId === peerId ? { ...c, unreadCount: 0 } : c,
-        );
-        void saveConversations(updated);
-        return updated;
-      });
-    },
-    [saveConversations],
-  );
+  const setSpeakerEnabled = useCallback((enabled: boolean) => {
+    InCallManager.setForceSpeakerphoneOn(enabled);
+    setIsSpeakerOn(enabled);
+  }, []);
 
-  const deleteConversation = useCallback(
-    (peerId: string) => {
-      setConversations((prev) => {
-        const updated = prev.filter((c) => c.peerId !== peerId);
-        void saveConversations(updated);
-        return updated;
-      });
-    },
-    [saveConversations],
-  );
+  const markAsRead = useCallback((peerId: string) => {
+    const conversation = conversations.find((item) => item.peerId === peerId);
+    const unreadMessageIds = (conversation?.messages ?? []).filter((message) => !message.fromMe && !message.deletedAt).map((message) => message.id);
+    updateConversations((previous) => previous.map((item) => item.peerId === peerId ? { ...item, unreadCount: 0 } : item));
+    unreadMessageIds.forEach((messageId) => sendRelay(peerId, { type: "message-read", messageId }));
+  }, [conversations, sendRelay, updateConversations]);
 
-  const updatePeerName = useCallback(
-    (peerId: string, name: string) => {
-      setConversations((prev) => {
-        const updated = prev.map((c) =>
-          c.peerId === peerId ? { ...c, peerName: name } : c,
-        );
-        void saveConversations(updated);
-        return updated;
-      });
-    },
-    [saveConversations],
-  );
+  const deleteConversation = useCallback((peerId: string) => updateConversations((previous) => previous.filter((item) => item.peerId !== peerId)), [updateConversations]);
+
+  const updatePeerName = useCallback((peerId: string, name: string) => {
+    updateConversations((previous) => previous.map((item) => item.peerId === peerId ? { ...item, peerName: name } : item));
+  }, [updateConversations]);
 
   return (
-    <LinkoraContext.Provider
-      value={{
-        userId,
-        userName,
-        isReady,
-        isConnected,
-        connectionError,
-        conversations,
-        incomingCall,
-        activeCall,
-        setupUser,
-        sendMessage,
-        startCall,
-        acceptCall,
-        rejectCall,
-        endCall,
-        markAsRead,
-        deleteConversation,
-        updatePeerName,
-      }}
-    >
+    <LinkoraContext.Provider value={{
+      userId,
+      userName,
+      isReady,
+      isConnected,
+      connectionError,
+      conversations,
+      incomingCall,
+      activeCall,
+      activeCallMode,
+      localStream,
+      remoteStream,
+      isMuted,
+      isSpeakerOn,
+      setupUser,
+      sendMessage,
+      sendTyping,
+      deleteMessage,
+      startCall,
+      acceptCall,
+      rejectCall,
+      endCall,
+      setCallMuted,
+      setSpeakerEnabled,
+      markAsRead,
+      deleteConversation,
+      updatePeerName,
+    }}>
       {children}
     </LinkoraContext.Provider>
   );
 }
 
 export function useLinkoraContext() {
-  const ctx = useContext(LinkoraContext);
-  if (!ctx)
-    throw new Error("useLinkoraContext must be used within LinkoraProvider");
-  return ctx;
+  const context = useContext(LinkoraContext);
+  if (!context) throw new Error("useLinkoraContext must be used within LinkoraProvider");
+  return context;
 }
