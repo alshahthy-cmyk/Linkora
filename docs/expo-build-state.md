@@ -33,3 +33,19 @@ Expo's monorepo guidance requires EAS configuration files to remain in the mobil
 ## Expo project settings check
 
 The project settings page for `@alshahthyameer/mobile` is available and its navigation exposes a dedicated **GitHub** settings section. A direct guessed URL for that section returned a 404, so it must be opened from the in-page navigation rather than constructed manually. No project values were changed during this inspection.
+
+## GitHub build form
+
+The Expo Builds page confirms that `alshahthy-cmyk/Linkora` was connected to the project. The **Build from GitHub** form asks for a base directory, platform, Git ref, build profile, and environment. It also displays an iOS-credentials warning, which is not relevant to the planned Android-only APK. The next build must use the mobile directory `artifacts/mobile`, Git ref `70ea070b6ade98569ffc2a61eab8c60019cc908d`, platform Android, and the `preview` EAS profile.
+
+The form source confirms that the base-directory field defaults to `/` and is named `baseDirectory`; the Git reference field is `gitRef`; and the build profile field is `buildProfile`. The form has a final submit button labelled Confirm. A container-scroll request timed out in the connected browser, so the fields will be addressed directly by their displayed positions or through the EAS command-line fallback rather than retrying the same scroll action.
+
+## Build attempt: bcb81dd4
+
+The user submitted the GitHub build with the full `70ea070b6ade98569ffc2a61eab8c60019cc908d` commit hash. Expo created Android build `bcb81dd4-677a-4c0e-9863-3771ef0a6c44` using the `preview` profile and `preview` environment, but the build errored after 58 seconds. The build details screen exposes its logs; those logs must be inspected before applying another source change.
+
+## Confirmed cause of build bcb81dd4
+
+The build installed dependencies successfully, including the new pre-install hook. It then failed while resolving build configuration with `EAS project not configured`. The mobile `app.json` already specifies the Expo owner (`alshahthyameer`), but it lacks the immutable EAS project identifier under `expo.extra.eas.projectId`. The required correction is to initialize or retrieve the existing EAS project identifier for `@alshahthyameer/mobile`, add it to `app.json`, verify that Expo resolves the configuration, and then rebuild.
+
+The existing project's Expo **Details** panel confirms that its immutable EAS project identifier is `601926ee-67ef-4158-8a3f-f3333dc1a298`. This value will be placed exactly at `expo.extra.eas.projectId`; no new Expo project will be created.
