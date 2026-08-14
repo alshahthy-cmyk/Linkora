@@ -1,0 +1,15 @@
+# Railway is currently using the legacy Nixpacks builder for this service.
+# Pin the package manager here because pnpm 9 rejects this workspace lockfile,
+# while pnpm 10.17.1 is verified with a frozen install in CI.
+
+[phases.setup]
+nixPkgs = ["nodejs_20", "pnpm-10_x", "openssl"]
+
+[phases.install]
+cmds = ["pnpm install --frozen-lockfile"]
+
+[phases.build]
+cmds = ["pnpm --filter @workspace/api-server run build"]
+
+[start]
+cmd = "node artifacts/api-server/dist/index.mjs"
