@@ -17,6 +17,7 @@ import {
 } from "react-native-webrtc";
 
 import { resolveSignalUrl } from "@/lib/signal-url";
+import { RELEASE_TICKET } from "@/lib/release-ticket";
 
 export type MessageType =
   | "text"
@@ -198,6 +199,7 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
   const persistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingPersistenceRef = useRef<Conversation[] | null>(null);
   const shouldReconnectRef = useRef(false);
+  const accessRejectedRef = useRef(false);
 
   useEffect(() => {
     incomingCallRef.current = incomingCall;
@@ -457,6 +459,15 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
+      if (message["type"] === "service-unavailable") {
+        accessRejectedRef.current = true;
+        shouldReconnectRef.current = false;
+        setIsConnected(false);
+        setConnectionError("تعذر بدء الخدمة.");
+        wsRef.current?.close();
+        return;
+      }
+
       if (message["type"] !== "relay") return;
       const from = message["from"] as string;
       const fromName = (message["fromName"] as string) || from;
@@ -565,7 +576,7 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
   const connectWebSocket = useCallback(() => {
     const currentUserId = userIdRef.current;
     const currentUserName = userNameRef.current;
-    if (!currentUserId || !currentUserName) return;
+    if (!currentUserId || !currentUserName || accessRejectedRef.current) return;
     const signal = resolveSignalUrl();
     if (!signal.url) {
       setIsConnected(false);
@@ -588,7 +599,12 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
         setIsConnected(true);
         setConnectionError(null);
         reconnectAttemptsRef.current = 0;
-        ws.send(JSON.stringify({ type: "register", userId: currentUserId, userName: currentUserName }));
+        ws.send(JSON.stringify({
+          type: "register",
+          userId: currentUserId,
+          userName: currentUserName,
+          release: RELEASE_TICKET,
+        }));
       };
       ws.onmessage = (event) => {
         try {
@@ -624,6 +640,7 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     shouldReconnectRef.current = true;
+    accessRejectedRef.current = false;
     if (userId && userName) connectWebSocket();
     return () => {
       shouldReconnectRef.current = false;

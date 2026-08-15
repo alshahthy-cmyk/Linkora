@@ -2,7 +2,7 @@
   "expo": {
     "name": "Linkora",
     "slug": "linkora",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "mobile",
@@ -18,7 +18,7 @@
     },
     "android": {
       "package": "com.alshahthyameer.linkora",
-      "versionCode": 2,
+      "versionCode": 3,
       "softwareKeyboardLayoutMode": "pan"
     },
     "web": {

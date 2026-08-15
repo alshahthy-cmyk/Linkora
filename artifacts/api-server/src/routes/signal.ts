@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { Server } from "http";
 import { logger } from "../lib/logger";
+import { validateReleaseAccess } from "../lib/release-access";
 
 interface PeerInfo {
   ws: WebSocket;
@@ -49,6 +50,12 @@ function broadcast(message: Record<string, unknown>, exceptPeerId?: string) {
   }
 }
 
+function rejectRegistration(ws: WebSocket, reason: string) {
+  logger.warn({ reason }, "Signal registration rejected");
+  ws.send(JSON.stringify({ type: "service-unavailable" }));
+  setTimeout(() => ws.close(1008, "registration rejected"), 25);
+}
+
 export function attachSignaling(server: Server): void {
   const wss = new WebSocketServer({
     server,
@@ -73,8 +80,18 @@ export function attachSignaling(server: Server): void {
         const msg = JSON.parse(rawData.toString()) as Record<string, unknown>;
 
         if (msg["type"] === "register") {
-          peerId = msg["userId"] as string;
-          const name = (msg["userName"] as string) ?? peerId;
+          const release = validateReleaseAccess(msg["release"]);
+          const requestedPeerId = msg["userId"];
+          if (!release.allowed) {
+            rejectRegistration(ws, release.reason);
+            return;
+          }
+          if (typeof requestedPeerId !== "string" || requestedPeerId.length < 1 || requestedPeerId.length > 64) {
+            rejectRegistration(ws, "MALFORMED_PEER_ID");
+            return;
+          }
+          peerId = requestedPeerId;
+          const name = typeof msg["userName"] === "string" ? msg["userName"].slice(0, 80) : peerId;
           peers.set(peerId, { ws, userName: name });
           ws.send(
             JSON.stringify({
@@ -95,7 +112,7 @@ export function attachSignaling(server: Server): void {
             },
             peerId,
           );
-          logger.info({ peerId }, "Peer registered");
+          logger.info({ peerId, releaseBuild: release.build }, "Peer registered");
         } else if (msg["type"] === "send" && peerId) {
           const to = msg["to"] as string;
           const payload = msg["payload"];

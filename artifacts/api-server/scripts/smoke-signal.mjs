@@ -2,6 +2,11 @@ import WebSocket from "ws";
 
 const endpoint = process.env.SIGNAL_URL ?? "ws://127.0.0.1:5103/api/signal";
 const timeoutMs = 5000;
+const release = {
+  build: 3,
+  version: "1.0.2",
+  ticket: "7N6VKO4yyQ0gL73heab1EiU1u17I6kmXOT1gPGfm6AIdmapOCalfFfLr2kpwb851mFP4sYaPHW53PQO2t5_5CQ",
+};
 
 function waitForMessage(socket, predicate) {
   return new Promise((resolve, reject) => {
@@ -40,20 +45,25 @@ function openClient() {
 
 const alice = await openClient();
 const bob = await openClient();
+const legacy = await openClient();
 
 try {
+  const legacyRejected = waitForMessage(legacy, (message) => message.type === "service-unavailable");
+  legacy.send(JSON.stringify({ type: "register", userId: "LEGACY01", userName: "Legacy" }));
+  await legacyRejected;
+
   const aliceRegistered = waitForMessage(
     alice,
     (message) => message.type === "registered" && message.userId === "ALICE001",
   );
-  alice.send(JSON.stringify({ type: "register", userId: "ALICE001", userName: "Alice" }));
+  alice.send(JSON.stringify({ type: "register", userId: "ALICE001", userName: "Alice", release }));
   await aliceRegistered;
 
   const bobRegistered = waitForMessage(
     bob,
     (message) => message.type === "registered" && message.userId === "BOB00001",
   );
-  bob.send(JSON.stringify({ type: "register", userId: "BOB00001", userName: "Bob" }));
+  bob.send(JSON.stringify({ type: "register", userId: "BOB00001", userName: "Bob", release }));
   await bobRegistered;
 
   const relayed = waitForMessage(
@@ -69,7 +79,7 @@ try {
     JSON.stringify({
       type: "send",
       to: "BOB00001",
-      payload: { type: "message", message: { content: "signal-smoke-test" } },
+      payload: { type: "message", message: { type: "text", content: "signal-smoke-test" } },
     }),
   );
 
@@ -102,4 +112,5 @@ try {
 } finally {
   alice.close();
   bob.close();
+  legacy.close();
 }
