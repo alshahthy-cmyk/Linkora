@@ -13,6 +13,7 @@
         "LINKORA_ANDROID_ARCH": "arm64"
       },
       "android": {
+        "image": "sdk-54",
         "buildType": "apk"
       }
     },
@@ -27,6 +28,9 @@
     "production": {
       "node": "20.18.0",
       "pnpm": "10.17.1",
+      "android": {
+        "image": "sdk-54"
+      },
       "env": {
         "EXPO_PUBLIC_APP_ENV": "production",
         "EXPO_PUBLIC_SIGNAL_URL": "wss://workspaceapi-server-production-5881.up.railway.app/api/signal"
