@@ -21,9 +21,6 @@ import { resolveSignalUrl } from "@/lib/signal-url";
 export type MessageType =
   | "text"
   | "image"
-  | "video"
-  | "file"
-  | "voice"
   | "call_started"
   | "call_ended"
   | "call_missed";
@@ -73,7 +70,7 @@ export interface IncomingCall {
 }
 
 export interface SendMessageInput {
-  type: "text" | "image" | "video" | "file" | "voice";
+  type: "text" | "image";
   content: string;
   fileName?: string;
   fileSize?: number;
@@ -119,6 +116,7 @@ const MAX_MESSAGES_IN_MEMORY = 180;
 const MAX_PERSISTED_MESSAGES_PER_CONVERSATION = 80;
 const MAX_PERSISTED_ATTACHMENT_CHARS = 1_000_000;
 const MAX_PENDING_ICE_CANDIDATES = 100;
+const WAKE_RETRY_DELAYS_MS = [2_000, 5_000];
 
 // Public STUN makes direct connections possible. A TURN service must be supplied
 // for reliable calls when either participant is behind a restrictive network.
@@ -144,8 +142,7 @@ function generateId(): string {
 }
 
 function isInlineAttachment(message: Message) {
-  return (message.type === "image" || message.type === "video" || message.type === "voice" || message.type === "file")
-    && message.content.startsWith("data:");
+  return message.type === "image" && message.content.startsWith("data:");
 }
 
 function compactMessageForStorage(message: Message): Message {
@@ -160,7 +157,10 @@ function compactConversationsForStorage(items: Conversation[]): Conversation[] {
     ...conversation,
     isOnline: false,
     isTyping: false,
-    messages: conversation.messages.slice(-MAX_PERSISTED_MESSAGES_PER_CONVERSATION).map(compactMessageForStorage),
+    messages: conversation.messages
+      .filter((message) => message.type === "text" || message.type === "image" || message.type.startsWith("call_"))
+      .slice(-MAX_PERSISTED_MESSAGES_PER_CONVERSATION)
+      .map(compactMessageForStorage),
   }));
 }
 
@@ -446,6 +446,11 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
+      if (message["type"] === "unsupported-content") {
+        setConnectionError("يسمح Linkora بالرسائل النصية والصور فقط.");
+        return;
+      }
+
       if (message["type"] === "peer-offline") {
         const peerId = message["peerId"] as string;
         updateConversations((previous) => previous.map((conversation) => conversation.peerId === peerId ? { ...conversation, isOnline: false, lastSeenAt: Date.now() } : conversation));
@@ -461,6 +466,7 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
       if (payload["type"] === "message") {
         const rawMessage = payload["message"] as Message;
         if (!rawMessage?.id) return;
+        if (rawMessage.type !== "text" && rawMessage.type !== "image") return;
         const incoming: Message = { ...rawMessage, fromMe: false, status: "delivered" };
         updateConversations((previous) => {
           const index = previous.findIndex((conversation) => conversation.peerId === from);
@@ -597,20 +603,22 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
         wsRef.current = null;
         if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
         if (!shouldReconnectRef.current) return;
-        const delay = Math.min(1000 * 2 ** reconnectAttemptsRef.current, 30000);
+        const retryIndex = reconnectAttemptsRef.current;
+        const delay = WAKE_RETRY_DELAYS_MS[retryIndex] ?? Math.min(10_000 * 2 ** Math.max(0, retryIndex - WAKE_RETRY_DELAYS_MS.length), 30_000);
         reconnectAttemptsRef.current += 1;
+        setConnectionError("جارٍ الاتصال…");
         reconnectTimeoutRef.current = setTimeout(() => {
           if (userIdRef.current) connectWebSocket();
         }, delay);
       };
       ws.onerror = () => {
         if (wsRef.current !== ws) return;
-        setConnectionError("Unable to reach the messaging service. Retrying...");
+        setConnectionError("جارٍ الاتصال…");
         ws.close();
       };
     } catch {
       setIsConnected(false);
-      setConnectionError("Unable to start the messaging connection. Retrying...");
+      setConnectionError("جارٍ الاتصال…");
     }
   }, []);
 
@@ -645,6 +653,10 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const sendMessage = useCallback((peerId: string, peerName: string, msgInput: SendMessageInput) => {
+    if (msgInput.type !== "text" && msgInput.type !== "image") {
+      setConnectionError("يسمح Linkora بالرسائل النصية والصور فقط.");
+      return;
+    }
     const message: Message = { id: generateId(), ...msgInput, fromMe: true, timestamp: Date.now(), status: "sending" };
     if (isInlineAttachment(message) && message.content.length > MAX_PERSISTED_ATTACHMENT_CHARS) {
       setConnectionError("This attachment is too large for the direct test connection. Choose a smaller file.");
@@ -660,7 +672,7 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
         ? { ...conversation, messages: conversation.messages.map((item) => item.id === message.id ? { ...item, status: "sent" } : item) }
         : conversation));
     } else {
-      setConnectionError("Connect to the messaging service before sending a message.");
+      setConnectionError("جارٍ الاتصال… ستُعاد المحاولة تلقائياً.");
     }
   }, [sendRelay, updateConversations]);
 

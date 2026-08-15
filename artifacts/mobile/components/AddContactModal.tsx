@@ -35,7 +35,7 @@ export function AddContactModal({
   const handleAdd = () => {
     const id = peerId.trim().toUpperCase().replace(/\s/g, "");
     if (id.length < 4) {
-      setError("Please enter a valid Linkora ID");
+      setError("أدخل معرّف Linkora صحيحاً");
       return;
     }
     const name = peerName.trim() || id;
@@ -80,7 +80,7 @@ export function AddContactModal({
           />
           <View style={styles.header}>
             <Text style={[styles.title, { color: colors.foreground }]}>
-              New Conversation
+              محادثة جديدة
             </Text>
             <Pressable onPress={handleClose} style={styles.closeBtn}>
               <Feather name="x" size={20} color={colors.mutedForeground} />
@@ -89,7 +89,7 @@ export function AddContactModal({
 
           <View style={styles.body}>
             <Text style={[styles.fieldLabel, { color: colors.mutedForeground }]}>
-              LINKORA ID *
+              معرّف LINKORA *
             </Text>
             <View
               style={[
@@ -103,7 +103,7 @@ export function AddContactModal({
               <Feather name="hash" size={16} color={colors.mutedForeground} />
               <TextInput
                 style={[styles.input, { color: colors.foreground }]}
-                placeholder="e.g. ABCD1234"
+                placeholder="مثال: ABCD1234"
                 placeholderTextColor={colors.mutedForeground}
                 value={peerId}
                 onChangeText={(t) => {
@@ -124,7 +124,7 @@ export function AddContactModal({
             <Text
               style={[styles.fieldLabel, { color: colors.mutedForeground, marginTop: 12 }]}
             >
-              NICKNAME (OPTIONAL)
+              اسم العرض (اختياري)
             </Text>
             <View
               style={[
@@ -135,7 +135,7 @@ export function AddContactModal({
               <Feather name="user" size={16} color={colors.mutedForeground} />
               <TextInput
                 style={[styles.input, { color: colors.foreground }]}
-                placeholder="How should I call them?"
+                placeholder="كيف تود أن يظهر الاسم؟"
                 placeholderTextColor={colors.mutedForeground}
                 value={peerName}
                 onChangeText={setPeerName}
@@ -156,8 +156,8 @@ export function AddContactModal({
               <Text
                 style={[styles.infoText, { color: colors.mutedForeground }]}
               >
-                Messages are only delivered when both devices are online.
-                Nothing is stored on any server.
+                تصل الرسائل عندما يكون الجهازان متصلين فقط. لا تُحفَظ
+                المحادثات على أي خادم.
               </Text>
             </View>
 
@@ -169,7 +169,7 @@ export function AddContactModal({
               ]}
             >
               <Feather name="message-circle" size={16} color="#fff" />
-              <Text style={styles.addButtonText}>Start Chat</Text>
+              <Text style={styles.addButtonText}>بدء المحادثة</Text>
             </Pressable>
           </View>
         </View>
@@ -188,9 +188,11 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   sheet: {
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
     paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.08)",
   },
   handle: {
     width: 36,
@@ -200,18 +202,20 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   header: {
-    flexDirection: "row",
+    flexDirection: "row-reverse",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 20,
     marginBottom: 16,
   },
   title: {
-    fontSize: 18,
+    fontSize: 19,
     fontFamily: "Inter_700Bold",
+    letterSpacing: -0.2,
   },
   closeBtn: {
-    padding: 4,
+    padding: 8,
+    borderRadius: 16,
   },
   body: {
     paddingHorizontal: 20,
@@ -222,6 +226,7 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_600SemiBold",
     letterSpacing: 1.1,
     marginBottom: 4,
+    alignSelf: "flex-end",
   },
   inputWrap: {
     flexDirection: "row",
@@ -236,6 +241,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 15,
     fontFamily: "Inter_400Regular",
+    textAlign: "right",
   },
   errorText: {
     fontSize: 12,
@@ -254,11 +260,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: "Inter_400Regular",
     lineHeight: 17,
+    textAlign: "right",
   },
   addButton: {
     flexDirection: "row",
     height: 50,
-    borderRadius: 13,
+    borderRadius: 15,
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
@@ -268,5 +275,6 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
+    letterSpacing: 0.1,
   },
 });

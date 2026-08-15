@@ -9,6 +9,36 @@ interface PeerInfo {
 
 const peers = new Map<string, PeerInfo>();
 const MAX_SIGNAL_MESSAGE_BYTES = 12 * 1024 * 1024;
+const MAX_INLINE_IMAGE_CHARS = 1_000_000;
+const ALLOWED_RELAY_TYPES = new Set([
+  "message",
+  "message-received",
+  "message-read",
+  "message-delete",
+  "typing",
+  "call-request",
+  "call-accept",
+  "call-reject",
+  "call-end",
+  "webrtc-offer",
+  "webrtc-answer",
+  "webrtc-ice",
+]);
+
+function isAllowedRelayPayload(payload: unknown): payload is Record<string, unknown> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const relay = payload as Record<string, unknown>;
+  const relayType = relay["type"];
+  if (typeof relayType !== "string" || !ALLOWED_RELAY_TYPES.has(relayType)) return false;
+  if (relayType !== "message") return true;
+
+  const message = relay["message"];
+  if (!message || typeof message !== "object" || Array.isArray(message)) return false;
+  const item = message as Record<string, unknown>;
+  if (item["type"] !== "text" && item["type"] !== "image") return false;
+  if (typeof item["content"] !== "string") return false;
+  return item["type"] !== "image" || item["content"].length <= MAX_INLINE_IMAGE_CHARS;
+}
 
 function broadcast(message: Record<string, unknown>, exceptPeerId?: string) {
   const encoded = JSON.stringify(message);
@@ -69,6 +99,10 @@ export function attachSignaling(server: Server): void {
         } else if (msg["type"] === "send" && peerId) {
           const to = msg["to"] as string;
           const payload = msg["payload"];
+          if (typeof to !== "string" || !isAllowedRelayPayload(payload)) {
+            ws.send(JSON.stringify({ type: "unsupported-content" }));
+            return;
+          }
           const target = peers.get(to);
 
           if (target && target.ws.readyState === WebSocket.OPEN) {

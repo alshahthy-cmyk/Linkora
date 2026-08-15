@@ -28,6 +28,7 @@ export default function ChatsScreen() {
   const sorted = [...conversations].sort(
     (a, b) => b.lastActivity - a.lastActivity,
   );
+  const isReconnecting = !isConnected && connectionError === "جارٍ الاتصال…";
 
   const handleAddContact = (peerId: string, peerName: string) => {
     // Navigate directly to chat - message will create the conversation
@@ -59,14 +60,29 @@ export default function ChatsScreen() {
           </Text>
           <View
             style={[
-              styles.connectionDot,
+              styles.statusPill,
               {
                 backgroundColor: isConnected
-                  ? colors.online
-                  : colors.mutedForeground,
+                  ? colors.online + "18"
+                  : colors.primary + "14",
               },
             ]}
-          />
+          >
+            <View
+              style={[
+                styles.connectionDot,
+                { backgroundColor: isConnected ? colors.online : colors.primary },
+              ]}
+            />
+            <Text
+              style={[
+                styles.statusText,
+                { color: isConnected ? colors.online : colors.primary },
+              ]}
+            >
+              {isConnected ? "متصل" : "جارٍ الاتصال"}
+            </Text>
+          </View>
         </View>
 
         <Pressable
@@ -90,11 +106,24 @@ export default function ChatsScreen() {
         <View
           style={[
             styles.connectionNotice,
-            { backgroundColor: colors.destructive + "18" },
+            {
+              backgroundColor: isReconnecting
+                ? colors.primary + "14"
+                : colors.destructive + "18",
+            },
           ]}
         >
-          <Feather name="wifi-off" size={15} color={colors.destructive} />
-          <Text style={[styles.connectionNoticeText, { color: colors.destructive }]}>
+          <Feather
+            name={isReconnecting ? "refresh-cw" : "wifi-off"}
+            size={15}
+            color={isReconnecting ? colors.primary : colors.destructive}
+          />
+          <Text
+            style={[
+              styles.connectionNoticeText,
+              { color: isReconnecting ? colors.primary : colors.destructive },
+            ]}
+          >
             {connectionError}
           </Text>
         </View>
@@ -121,7 +150,7 @@ export default function ChatsScreen() {
           <View
             style={[
               styles.separator,
-              { backgroundColor: colors.border, marginLeft: 78 },
+              { backgroundColor: colors.border, marginRight: 78 },
             ]}
           />
         )}
@@ -136,17 +165,17 @@ export default function ChatsScreen() {
               <Feather name="message-circle" size={32} color={colors.primary} />
             </View>
             <Text style={[styles.emptyTitle, { color: colors.foreground }]}>
-              No conversations yet
+              لا توجد محادثات بعد
             </Text>
             <Text style={[styles.emptyDesc, { color: colors.mutedForeground }]}>
-              Tap the edit icon to start a new{"\n"}P2P conversation
+              أضف معرّف أحد أفراد العائلة لبدء{"\n"}محادثة خاصة مباشرة
             </Text>
             <Pressable
               onPress={() => setAddModalVisible(true)}
               style={[styles.emptyBtn, { backgroundColor: colors.primary }]}
             >
               <Feather name="plus" size={16} color="#fff" />
-              <Text style={styles.emptyBtnText}>New Chat</Text>
+              <Text style={styles.emptyBtnText}>محادثة جديدة</Text>
             </Pressable>
           </View>
         }
@@ -166,7 +195,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   header: {
-    flexDirection: "row",
+    flexDirection: "row-reverse",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 20,
@@ -174,7 +203,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   headerLeft: {
-    flexDirection: "row",
+    flexDirection: "row-reverse",
     alignItems: "center",
     gap: 8,
   },
@@ -184,10 +213,21 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
   },
   connectionDot: {
-    width: 8,
-    height: 8,
+    width: 7,
+    height: 7,
     borderRadius: 4,
-    marginTop: 2,
+  },
+  statusPill: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 99,
+  },
+  statusText: {
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
   },
   addBtn: {
     width: 38,
@@ -197,7 +237,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   connectionNotice: {
-    flexDirection: "row",
+    flexDirection: "row-reverse",
     alignItems: "center",
     gap: 8,
     marginHorizontal: 16,
@@ -212,6 +252,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: "Inter_500Medium",
     lineHeight: 17,
+    textAlign: "right",
   },
   list: {
     flexGrow: 1,
@@ -238,6 +279,7 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 18,
     fontFamily: "Inter_600SemiBold",
+    textAlign: "center",
   },
   emptyDesc: {
     fontSize: 14,
@@ -246,7 +288,7 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   emptyBtn: {
-    flexDirection: "row",
+    flexDirection: "row-reverse",
     alignItems: "center",
     gap: 6,
     paddingHorizontal: 20,

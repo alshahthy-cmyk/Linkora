@@ -1,8 +1,5 @@
 import { Feather } from "@expo/vector-icons";
-import { RecordingPresets, requestRecordingPermissionsAsync, setAudioModeAsync, useAudioRecorder, useAudioRecorderState } from "expo-audio";
 import * as Clipboard from "expo-clipboard";
-import * as DocumentPicker from "expo-document-picker";
-import { File } from "expo-file-system";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import { router, useLocalSearchParams } from "expo-router";
@@ -29,20 +26,18 @@ function toReplyReference(message: Message): ReplyReference {
   };
 }
 
-const MAX_INLINE_ATTACHMENT_BYTES = 650 * 1024;
+const MAX_INLINE_IMAGE_BYTES = 650 * 1024;
 
 export default function ChatScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { peerId } = useLocalSearchParams<{ peerId: string }>();
-  const { conversations, sendMessage, sendTyping, deleteMessage, markAsRead, startCall, isConnected } = useLinkoraContext();
+  const { conversations, sendMessage, sendTyping, deleteMessage, markAsRead, startCall, isConnected, connectionError } = useLinkoraContext();
   const [text, setText] = useState("");
   const [replyingTo, setReplyingTo] = useState<ReplyReference | null>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingSentRef = useRef(false);
   const flatListRef = useRef<FlatList<Message>>(null);
-  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const recorderState = useAudioRecorderState(audioRecorder);
 
   const conversation = conversations.find((item) => item.peerId === peerId);
   const messages = conversation?.messages ?? [];
@@ -91,122 +86,48 @@ export default function ChatScreen() {
 
   const sendPickedMedia = async (asset: ImagePicker.ImagePickerAsset) => {
     if (!peerId) return;
-    const mediaFile = new File(asset.uri);
-    const mediaByteSize = asset.fileSize ?? (mediaFile.exists ? mediaFile.size : 0);
-    if (mediaByteSize > MAX_INLINE_ATTACHMENT_BYTES) {
-      Alert.alert("Media too large", "To keep this direct test version stable, choose a photo or video smaller than 650 KB.");
+    const mediaByteSize = asset.fileSize ?? 0;
+    if (mediaByteSize > MAX_INLINE_IMAGE_BYTES) {
+      Alert.alert("الصورة كبيرة", "لإبقاء المحادثة سريعة، اختر صورة أصغر من 650 كيلوبايت.");
       return;
     }
     try {
-      const isVideo = asset.type === "video";
-      const mimeType = asset.mimeType ?? (isVideo ? "video/mp4" : "image/jpeg");
-      const base64 = asset.base64 ?? await mediaFile.base64();
+      const mimeType = asset.mimeType ?? "image/jpeg";
+      const base64 = asset.base64;
       if (!base64) throw new Error("Media encoding unavailable");
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       sendMessage(peerId, peerName, {
-        type: isVideo ? "video" : "image",
+        type: "image",
         content: `data:${mimeType};base64,${base64}`,
-        fileName: asset.fileName ?? (isVideo ? "Video" : "Photo"),
+        fileName: asset.fileName ?? "Photo",
         fileSize: mediaByteSize || undefined,
         mimeType,
         replyTo: replyingTo ?? undefined,
       });
       setReplyingTo(null);
     } catch {
-      Alert.alert("Media", "The selected media could not be prepared.");
+      Alert.alert("الصورة", "تعذّر تجهيز الصورة المختارة.");
     }
   };
 
   const handlePickMedia = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      Alert.alert("Media permission", "Allow photo and video access to share media in Linkora.");
+      Alert.alert("إذن الصور", "اسمح بالوصول إلى الصور لمشاركتها في Linkora.");
       return;
     }
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images", "videos"], base64: false, quality: 0.55, videoMaxDuration: 10 });
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], base64: true, quality: 0.45 });
     if (!result.canceled && result.assets[0]) await sendPickedMedia(result.assets[0]);
   };
 
   const handleCaptureMedia = async () => {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
-      Alert.alert("Camera permission", "Allow camera access to capture a photo or video for your chat.");
+      Alert.alert("إذن الكاميرا", "اسمح باستخدام الكاميرا لالتقاط صورة للمحادثة.");
       return;
     }
-    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ["images", "videos"], base64: false, quality: 0.55, videoMaxDuration: 10 });
+    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ["images"], base64: true, quality: 0.45 });
     if (!result.canceled && result.assets[0]) await sendPickedMedia(result.assets[0]);
-  };
-
-  const handlePickFile = async () => {
-    if (!peerId) return;
-    try {
-      const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
-      if (!result.canceled && result.assets[0]) {
-        const asset = result.assets[0];
-        const file = new File(asset.uri);
-        const fileByteSize = asset.size ?? (file.exists ? file.size : 0);
-        if (fileByteSize > MAX_INLINE_ATTACHMENT_BYTES) {
-          Alert.alert("File too large", "To keep this direct test version stable, choose a file smaller than 650 KB.");
-          return;
-        }
-        const base64 = await file.base64();
-        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        sendMessage(peerId, peerName, {
-          type: "file",
-          content: `data:${asset.mimeType ?? "application/octet-stream"};base64,${base64}`,
-          fileName: asset.name,
-          fileSize: fileByteSize || undefined,
-          mimeType: asset.mimeType ?? "application/octet-stream",
-          replyTo: replyingTo ?? undefined,
-        });
-        setReplyingTo(null);
-      }
-    } catch {
-      Alert.alert("Attachment", "The selected file could not be prepared.");
-    }
-  };
-
-  const handleVoiceMessage = async () => {
-    if (!peerId) return;
-    try {
-      if (!recorderState.isRecording) {
-        const permission = await requestRecordingPermissionsAsync();
-        if (!permission.granted) {
-          Alert.alert("Microphone permission", "Allow microphone access to record a voice message.");
-          return;
-        }
-        await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
-        await audioRecorder.prepareToRecordAsync();
-        audioRecorder.record();
-        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        return;
-      }
-
-      await audioRecorder.stop();
-      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false });
-      const uri = audioRecorder.uri;
-      if (!uri) throw new Error("Recording is unavailable");
-      const recordedFile = new File(uri);
-      const fileSize = recordedFile.exists ? recordedFile.size : undefined;
-      if ((fileSize ?? 0) > MAX_INLINE_ATTACHMENT_BYTES) {
-        Alert.alert("Voice message too large", "Record a shorter message to keep this direct test version stable.");
-        return;
-      }
-      const base64 = await recordedFile.base64();
-      sendMessage(peerId, peerName, {
-        type: "voice",
-        content: `data:audio/m4a;base64,${base64}`,
-        fileName: "Voice message",
-        fileSize,
-        mimeType: "audio/m4a",
-        durationMs: recorderState.durationMillis,
-        replyTo: replyingTo ?? undefined,
-      });
-      setReplyingTo(null);
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch {
-      Alert.alert("Voice message", "The recording could not be saved. Please try again.");
-    }
   };
 
   const showMessageActions = useCallback((message: Message) => {
@@ -237,7 +158,7 @@ export default function ChatScreen() {
     ]);
   };
 
-  const headerStatus = isTyping ? "Typing…" : isOnline ? "Online" : isConnected ? formatLastSeen(conversation?.lastSeenAt) : "No connection";
+  const headerStatus = isTyping ? "يكتب الآن…" : isOnline ? "متصل الآن" : isConnected ? formatLastSeen(conversation?.lastSeenAt) : "جارٍ الاتصال…";
 
   return (
     <KeyboardAvoidingView style={[styles.container, { backgroundColor: colors.background }]} behavior="padding" keyboardVerticalOffset={0}>
@@ -253,7 +174,7 @@ export default function ChatScreen() {
         <Pressable onPress={handleCallPress} style={styles.callBtn} hitSlop={12}><Feather name="video" size={20} color={colors.primary} /></Pressable>
       </View>
 
-      {!isConnected && <View style={[styles.offlineBanner, { backgroundColor: colors.destructive + "20" }]}><Feather name="wifi-off" size={12} color={colors.destructive} /><Text style={[styles.offlineBannerText, { color: colors.destructive }]}>Not connected — messages will wait locally</Text></View>}
+      {!isConnected && <View style={[styles.offlineBanner, { backgroundColor: colors.primary + "14" }]}><Feather name="wifi" size={12} color={colors.primary} /><Text style={[styles.offlineBannerText, { color: colors.primary }]}>{connectionError || "جارٍ الاتصال…"}</Text></View>}
 
       <FlatList<Message>
         ref={flatListRef}
@@ -274,16 +195,15 @@ export default function ChatScreen() {
       />
 
       <View style={[styles.inputBar, { backgroundColor: colors.card, borderTopColor: colors.border, paddingBottom: insets.bottom + 8 }]}>
-        {replyingTo && <View style={[styles.replyBar, { backgroundColor: colors.primary + "10", borderColor: colors.border }]}><View style={styles.replyBarCopy}><Text style={[styles.replyBarTitle, { color: colors.primary }]}>Replying to {replyingTo.fromMe ? "yourself" : peerName}</Text><Text numberOfLines={1} style={[styles.replyBarText, { color: colors.mutedForeground }]}>{replyingTo.content || (replyingTo.type === "image" ? "Photo" : replyingTo.type === "video" ? "Video" : replyingTo.type === "voice" ? "Voice message" : "File")}</Text></View><Pressable onPress={() => setReplyingTo(null)} hitSlop={10}><Feather name="x" size={18} color={colors.mutedForeground} /></Pressable></View>}
+        {replyingTo && <View style={[styles.replyBar, { backgroundColor: colors.primary + "10", borderColor: colors.border }]}><View style={styles.replyBarCopy}><Text style={[styles.replyBarTitle, { color: colors.primary }]}>رد على {replyingTo.fromMe ? "رسالتك" : peerName}</Text><Text numberOfLines={1} style={[styles.replyBarText, { color: colors.mutedForeground }]}>{replyingTo.content || "صورة"}</Text></View><Pressable onPress={() => setReplyingTo(null)} hitSlop={10}><Feather name="x" size={18} color={colors.mutedForeground} /></Pressable></View>}
         <View style={styles.composerRow}>
-          <Pressable onPress={handlePickFile} style={styles.iconBtn} hitSlop={8}><Feather name="paperclip" size={20} color={colors.mutedForeground} /></Pressable>
           <Pressable onPress={handleCaptureMedia} style={styles.iconBtn} hitSlop={8}><Feather name="camera" size={20} color={colors.mutedForeground} /></Pressable>
           <Pressable onPress={handlePickMedia} style={styles.iconBtn} hitSlop={8}><Feather name="image" size={20} color={colors.mutedForeground} /></Pressable>
-          <View style={[styles.textInputWrap, { backgroundColor: colors.secondary, borderColor: colors.border }]}><TextInput style={[styles.textInput, { color: colors.foreground }]} placeholder="Message..." placeholderTextColor={colors.mutedForeground} value={text} onChangeText={handleTextChange} multiline maxLength={4000} returnKeyType="default" /></View>
+          <View style={[styles.textInputWrap, { backgroundColor: colors.secondary, borderColor: colors.border }]}><TextInput style={[styles.textInput, { color: colors.foreground }]} placeholder="اكتب رسالة…" placeholderTextColor={colors.mutedForeground} value={text} onChangeText={handleTextChange} multiline maxLength={4000} returnKeyType="default" /></View>
           {text.trim() ? (
             <Pressable onPress={handleSendText} style={({ pressed }) => [styles.sendBtn, { backgroundColor: colors.primary, opacity: pressed ? 0.8 : 1 }]}><Feather name="send" size={18} color="#fff" /></Pressable>
           ) : (
-            <Pressable onPress={handleVoiceMessage} style={({ pressed }) => [styles.sendBtn, { backgroundColor: recorderState.isRecording ? colors.destructive : colors.primary, opacity: pressed ? 0.8 : 1 }]}><Feather name={recorderState.isRecording ? "square" : "mic"} size={18} color="#fff" /></Pressable>
+            <View style={[styles.sendBtn, { backgroundColor: colors.secondary }]}><Feather name="send" size={18} color={colors.mutedForeground} /></View>
           )}
         </View>
       </View>

@@ -23,7 +23,6 @@ function getLastMessagePreview(conv: Conversation): string {
   const prefix = last.fromMe ? "You: " : "";
   if (last.type === "text") return `${prefix}${last.content}`;
   if (last.type === "image") return `${prefix}📷 Image`;
-  if (last.type === "file") return `${prefix}📎 ${last.fileName ?? "File"}`;
   if (last.type === "call_started") return "Call started";
   if (last.type === "call_ended") return "Call ended";
   if (last.type === "call_missed")
