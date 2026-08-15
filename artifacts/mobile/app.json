@@ -2,7 +2,6 @@
   "expo": {
     "name": "Linkora",
     "slug": "mobile",
-    "owner": "alshahthyameer",
     "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -66,7 +65,7 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "601926ee-67ef-4158-8a3f-f3333dc1a298"
+        "projectId": "25d0aee8-0771-46c9-b86a-516a55d1ba1d"
       }
     },
     "experiments": {
