@@ -6,7 +6,7 @@ import { File } from "expo-file-system";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import { router, useLocalSearchParams } from "expo-router";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, FlatList, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -29,7 +29,7 @@ function toReplyReference(message: Message): ReplyReference {
   };
 }
 
-const MAX_MEDIA_BYTES = 6 * 1024 * 1024;
+const MAX_INLINE_ATTACHMENT_BYTES = 650 * 1024;
 
 export default function ChatScreen() {
   const colors = useColors();
@@ -39,6 +39,7 @@ export default function ChatScreen() {
   const [text, setText] = useState("");
   const [replyingTo, setReplyingTo] = useState<ReplyReference | null>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const typingSentRef = useRef(false);
   const flatListRef = useRef<FlatList<Message>>(null);
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(audioRecorder);
@@ -48,6 +49,7 @@ export default function ChatScreen() {
   const peerName = conversation?.peerName ?? peerId ?? "Unknown";
   const isOnline = conversation?.isOnline ?? false;
   const isTyping = conversation?.isTyping ?? false;
+  const reversedMessages = useMemo(() => [...messages].reverse(), [messages]);
 
   useEffect(() => {
     if (peerId) markAsRead(peerId);
@@ -55,15 +57,26 @@ export default function ChatScreen() {
 
   useEffect(() => () => {
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
-    if (peerId) sendTyping(peerId, false);
+    if (peerId && typingSentRef.current) sendTyping(peerId, false);
+    typingSentRef.current = false;
   }, [peerId, sendTyping]);
 
   const handleTextChange = (value: string) => {
     setText(value);
     if (!peerId) return;
-    sendTyping(peerId, value.trim().length > 0);
+    const shouldShowTyping = value.trim().length > 0;
+    if (typingSentRef.current !== shouldShowTyping) {
+      sendTyping(peerId, shouldShowTyping);
+      typingSentRef.current = shouldShowTyping;
+    }
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
-    typingTimerRef.current = setTimeout(() => sendTyping(peerId, false), 1200);
+    if (shouldShowTyping) {
+      typingTimerRef.current = setTimeout(() => {
+        if (!typingSentRef.current) return;
+        sendTyping(peerId, false);
+        typingSentRef.current = false;
+      }, 1200);
+    }
   };
 
   const handleSendText = () => {
@@ -73,25 +86,28 @@ export default function ChatScreen() {
     setText("");
     setReplyingTo(null);
     sendTyping(peerId, false);
+    typingSentRef.current = false;
   };
 
   const sendPickedMedia = async (asset: ImagePicker.ImagePickerAsset) => {
     if (!peerId) return;
-    if ((asset.fileSize ?? 0) > MAX_MEDIA_BYTES) {
-      Alert.alert("Media too large", "Choose a photo or video smaller than 6 MB for this test version.");
+    const mediaFile = new File(asset.uri);
+    const mediaByteSize = asset.fileSize ?? (mediaFile.exists ? mediaFile.size : 0);
+    if (mediaByteSize > MAX_INLINE_ATTACHMENT_BYTES) {
+      Alert.alert("Media too large", "To keep this direct test version stable, choose a photo or video smaller than 650 KB.");
       return;
     }
     try {
       const isVideo = asset.type === "video";
       const mimeType = asset.mimeType ?? (isVideo ? "video/mp4" : "image/jpeg");
-      const base64 = asset.base64 ?? await new File(asset.uri).base64();
+      const base64 = asset.base64 ?? await mediaFile.base64();
       if (!base64) throw new Error("Media encoding unavailable");
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       sendMessage(peerId, peerName, {
         type: isVideo ? "video" : "image",
         content: `data:${mimeType};base64,${base64}`,
         fileName: asset.fileName ?? (isVideo ? "Video" : "Photo"),
-        fileSize: asset.fileSize ?? undefined,
+        fileSize: mediaByteSize || undefined,
         mimeType,
         replyTo: replyingTo ?? undefined,
       });
@@ -107,7 +123,7 @@ export default function ChatScreen() {
       Alert.alert("Media permission", "Allow photo and video access to share media in Linkora.");
       return;
     }
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images", "videos"], base64: true, quality: 0.7, videoMaxDuration: 30 });
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images", "videos"], base64: false, quality: 0.55, videoMaxDuration: 10 });
     if (!result.canceled && result.assets[0]) await sendPickedMedia(result.assets[0]);
   };
 
@@ -117,7 +133,7 @@ export default function ChatScreen() {
       Alert.alert("Camera permission", "Allow camera access to capture a photo or video for your chat.");
       return;
     }
-    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ["images", "videos"], base64: true, quality: 0.7, videoMaxDuration: 30 });
+    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ["images", "videos"], base64: false, quality: 0.55, videoMaxDuration: 10 });
     if (!result.canceled && result.assets[0]) await sendPickedMedia(result.assets[0]);
   };
 
@@ -127,17 +143,19 @@ export default function ChatScreen() {
       const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
       if (!result.canceled && result.assets[0]) {
         const asset = result.assets[0];
-        if ((asset.size ?? 0) > 8 * 1024 * 1024) {
-          Alert.alert("File too large", "Choose a file smaller than 8 MB for this test version.");
+        const file = new File(asset.uri);
+        const fileByteSize = asset.size ?? (file.exists ? file.size : 0);
+        if (fileByteSize > MAX_INLINE_ATTACHMENT_BYTES) {
+          Alert.alert("File too large", "To keep this direct test version stable, choose a file smaller than 650 KB.");
           return;
         }
-        const base64 = await new File(asset.uri).base64();
+        const base64 = await file.base64();
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         sendMessage(peerId, peerName, {
           type: "file",
           content: `data:${asset.mimeType ?? "application/octet-stream"};base64,${base64}`,
           fileName: asset.name,
-          fileSize: asset.size ?? undefined,
+          fileSize: fileByteSize || undefined,
           mimeType: asset.mimeType ?? "application/octet-stream",
           replyTo: replyingTo ?? undefined,
         });
@@ -170,8 +188,8 @@ export default function ChatScreen() {
       if (!uri) throw new Error("Recording is unavailable");
       const recordedFile = new File(uri);
       const fileSize = recordedFile.exists ? recordedFile.size : undefined;
-      if ((fileSize ?? 0) > 3 * 1024 * 1024) {
-        Alert.alert("Voice message too large", "Record a shorter message than 3 MB for this test version.");
+      if ((fileSize ?? 0) > MAX_INLINE_ATTACHMENT_BYTES) {
+        Alert.alert("Voice message too large", "Record a shorter message to keep this direct test version stable.");
         return;
       }
       const base64 = await recordedFile.base64();
@@ -239,10 +257,15 @@ export default function ChatScreen() {
 
       <FlatList<Message>
         ref={flatListRef}
-        data={[...messages].reverse()}
+        data={reversedMessages}
         inverted
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => <MessageBubble message={item} onLongPress={showMessageActions} />}
+        removeClippedSubviews={Platform.OS === "android"}
+        initialNumToRender={12}
+        maxToRenderPerBatch={8}
+        updateCellsBatchingPeriod={60}
+        windowSize={7}
         contentContainerStyle={[styles.messagesList, { paddingBottom: 12 }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"

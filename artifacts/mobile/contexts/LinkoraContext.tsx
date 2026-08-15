@@ -51,6 +51,7 @@ export interface Message {
   status: MessageStatus;
   replyTo?: ReplyReference;
   deletedAt?: number;
+  attachmentUnavailable?: boolean;
 }
 
 export interface Conversation {
@@ -113,6 +114,11 @@ interface LinkoraContextValue {
 const USER_KEY = "linkora_user";
 const CONVS_KEY = "linkora_conversations";
 const TYPING_TIMEOUT_MS = 4000;
+const PERSIST_DEBOUNCE_MS = 700;
+const MAX_MESSAGES_IN_MEMORY = 180;
+const MAX_PERSISTED_MESSAGES_PER_CONVERSATION = 80;
+const MAX_PERSISTED_ATTACHMENT_CHARS = 1_000_000;
+const MAX_PENDING_ICE_CANDIDATES = 100;
 
 // Public STUN makes direct connections possible. A TURN service must be supplied
 // for reliable calls when either participant is behind a restrictive network.
@@ -135,6 +141,27 @@ function generateUserId(): string {
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
+function isInlineAttachment(message: Message) {
+  return (message.type === "image" || message.type === "video" || message.type === "voice" || message.type === "file")
+    && message.content.startsWith("data:");
+}
+
+function compactMessageForStorage(message: Message): Message {
+  if (isInlineAttachment(message) && message.content.length > MAX_PERSISTED_ATTACHMENT_CHARS) {
+    return { ...message, content: "", attachmentUnavailable: true };
+  }
+  return message;
+}
+
+function compactConversationsForStorage(items: Conversation[]): Conversation[] {
+  return items.map((conversation) => ({
+    ...conversation,
+    isOnline: false,
+    isTyping: false,
+    messages: conversation.messages.slice(-MAX_PERSISTED_MESSAGES_PER_CONVERSATION).map(compactMessageForStorage),
+  }));
 }
 
 const LinkoraContext = createContext<LinkoraContextValue | null>(null);
@@ -167,6 +194,10 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const conversationsRef = useRef<Conversation[]>([]);
+  const persistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingPersistenceRef = useRef<Conversation[] | null>(null);
+  const shouldReconnectRef = useRef(false);
 
   useEffect(() => {
     incomingCallRef.current = incomingCall;
@@ -176,19 +207,34 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
     activeCallRef.current = activeCall;
   }, [activeCall]);
 
-  const saveConversations = useCallback(async (next: Conversation[]) => {
-    try {
-      await AsyncStorage.setItem(CONVS_KEY, JSON.stringify(next));
-    } catch {
-      // Local persistence must never block chat interactions.
-    }
+  const saveConversations = useCallback((next: Conversation[]) => {
+    pendingPersistenceRef.current = compactConversationsForStorage(next);
+    if (persistTimeoutRef.current) clearTimeout(persistTimeoutRef.current);
+    persistTimeoutRef.current = setTimeout(() => {
+      const snapshot = pendingPersistenceRef.current;
+      pendingPersistenceRef.current = null;
+      persistTimeoutRef.current = null;
+      if (!snapshot) return;
+      void AsyncStorage.setItem(CONVS_KEY, JSON.stringify(snapshot)).catch(() => {
+        // Local persistence must never block chat interactions.
+      });
+    }, PERSIST_DEBOUNCE_MS);
+  }, []);
+
+  const flushConversationPersistence = useCallback(() => {
+    if (persistTimeoutRef.current) clearTimeout(persistTimeoutRef.current);
+    persistTimeoutRef.current = null;
+    const snapshot = pendingPersistenceRef.current;
+    pendingPersistenceRef.current = null;
+    if (snapshot) void AsyncStorage.setItem(CONVS_KEY, JSON.stringify(snapshot)).catch(() => {});
   }, []);
 
   const updateConversations = useCallback(
     (updater: (previous: Conversation[]) => Conversation[]) => {
       setConversations((previous) => {
         const next = updater(previous);
-        void saveConversations(next);
+        conversationsRef.current = next;
+        saveConversations(next);
         return next;
       });
     },
@@ -213,7 +259,11 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
 
         if (conversationsRaw) {
           const savedConversations = JSON.parse(conversationsRaw) as Conversation[];
-          setConversations(savedConversations.map((conversation) => ({ ...conversation, isOnline: false, isTyping: false })));
+          const restoredConversations = compactConversationsForStorage(savedConversations);
+          conversationsRef.current = restoredConversations;
+          setConversations(restoredConversations);
+          const compactedRaw = JSON.stringify(restoredConversations);
+          if (compactedRaw !== conversationsRaw) void AsyncStorage.setItem(CONVS_KEY, compactedRaw).catch(() => {});
         }
       } catch {
         // Start with an empty local history if a stale cache cannot be decoded.
@@ -223,6 +273,10 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
     }
     void load();
   }, []);
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
 
   const sendRelay = useCallback((peerId: string, payload: Record<string, unknown>) => {
     const ws = wsRef.current;
@@ -240,7 +294,7 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
           return [...previous, { peerId, peerName, messages: [message], isOnline: true, lastActivity: message.timestamp, unreadCount: 0 }];
         }
         return previous.map((conversation, itemIndex) => itemIndex === index
-          ? { ...conversation, peerName, messages: [...conversation.messages, message], lastActivity: message.timestamp }
+          ? { ...conversation, peerName, messages: [...conversation.messages, message].slice(-MAX_MESSAGES_IN_MEMORY), lastActivity: message.timestamp }
           : conversation);
       });
     },
@@ -360,6 +414,10 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
       if (connection.remoteDescription) {
         await connection.addIceCandidate(new RTCIceCandidate(candidate));
       } else {
+        if (pendingCandidatesRef.current.length >= MAX_PENDING_ICE_CANDIDATES) {
+          setConnectionError("The call received too many network candidates. Please try again.");
+          return;
+        }
         pendingCandidatesRef.current.push(candidate);
       }
     };
@@ -408,7 +466,7 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
           const index = previous.findIndex((conversation) => conversation.peerId === from);
           if (index < 0) return [...previous, { peerId: from, peerName: fromName, messages: [incoming], isOnline: true, lastActivity: incoming.timestamp, unreadCount: 1 }];
           return previous.map((conversation, itemIndex) => itemIndex === index
-            ? { ...conversation, peerName: fromName, isOnline: true, messages: [...conversation.messages, incoming], lastActivity: incoming.timestamp, unreadCount: conversation.unreadCount + 1 }
+            ? { ...conversation, peerName: fromName, isOnline: true, messages: [...conversation.messages, incoming].slice(-MAX_MESSAGES_IN_MEMORY), lastActivity: incoming.timestamp, unreadCount: conversation.unreadCount + 1 }
             : conversation);
         });
         sendRelay(from, { type: "message-received", messageId: incoming.id });
@@ -509,10 +567,18 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    const existingSocket = wsRef.current;
+    if (existingSocket && (existingSocket.readyState === WebSocket.OPEN || existingSocket.readyState === WebSocket.CONNECTING)) return;
+    if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+
     try {
       const ws = new WebSocket(signal.url);
       wsRef.current = ws;
       ws.onopen = () => {
+        if (wsRef.current !== ws) {
+          ws.close();
+          return;
+        }
         setIsConnected(true);
         setConnectionError(null);
         reconnectAttemptsRef.current = 0;
@@ -526,9 +592,11 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
         }
       };
       ws.onclose = () => {
+        if (wsRef.current !== ws) return;
         setIsConnected(false);
         wsRef.current = null;
         if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+        if (!shouldReconnectRef.current) return;
         const delay = Math.min(1000 * 2 ** reconnectAttemptsRef.current, 30000);
         reconnectAttemptsRef.current += 1;
         reconnectTimeoutRef.current = setTimeout(() => {
@@ -536,6 +604,7 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
         }, delay);
       };
       ws.onerror = () => {
+        if (wsRef.current !== ws) return;
         setConnectionError("Unable to reach the messaging service. Retrying...");
         ws.close();
       };
@@ -546,14 +615,25 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    shouldReconnectRef.current = true;
     if (userId && userName) connectWebSocket();
     return () => {
+      shouldReconnectRef.current = false;
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       typingTimeoutsRef.current.forEach((timeout) => clearTimeout(timeout));
-      wsRef.current?.close();
+      typingTimeoutsRef.current.clear();
+      const socket = wsRef.current;
+      if (socket) {
+        socket.onclose = null;
+        socket.onerror = null;
+        socket.onmessage = null;
+        socket.close();
+        if (wsRef.current === socket) wsRef.current = null;
+      }
+      flushConversationPersistence();
       closePeerConnection();
     };
-  }, [closePeerConnection, connectWebSocket, userId, userName]);
+  }, [closePeerConnection, connectWebSocket, flushConversationPersistence, userId, userName]);
 
   const setupUser = useCallback(async (name: string) => {
     const id = generateUserId();
@@ -566,10 +646,14 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
 
   const sendMessage = useCallback((peerId: string, peerName: string, msgInput: SendMessageInput) => {
     const message: Message = { id: generateId(), ...msgInput, fromMe: true, timestamp: Date.now(), status: "sending" };
+    if (isInlineAttachment(message) && message.content.length > MAX_PERSISTED_ATTACHMENT_CHARS) {
+      setConnectionError("This attachment is too large for the direct test connection. Choose a smaller file.");
+      return;
+    }
     updateConversations((previous) => {
       const index = previous.findIndex((conversation) => conversation.peerId === peerId);
       if (index < 0) return [...previous, { peerId, peerName, messages: [message], isOnline: true, lastActivity: message.timestamp, unreadCount: 0 }];
-      return previous.map((conversation, itemIndex) => itemIndex === index ? { ...conversation, messages: [...conversation.messages, message], lastActivity: message.timestamp } : conversation);
+      return previous.map((conversation, itemIndex) => itemIndex === index ? { ...conversation, messages: [...conversation.messages, message].slice(-MAX_MESSAGES_IN_MEMORY), lastActivity: message.timestamp } : conversation);
     });
     if (sendRelay(peerId, { type: "message", message })) {
       updateConversations((previous) => previous.map((conversation) => conversation.peerId === peerId
@@ -649,11 +733,11 @@ export function LinkoraProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const markAsRead = useCallback((peerId: string) => {
-    const conversation = conversations.find((item) => item.peerId === peerId);
+    const conversation = conversationsRef.current.find((item) => item.peerId === peerId);
     const unreadMessageIds = (conversation?.messages ?? []).filter((message) => !message.fromMe && !message.deletedAt).map((message) => message.id);
     updateConversations((previous) => previous.map((item) => item.peerId === peerId ? { ...item, unreadCount: 0 } : item));
     unreadMessageIds.forEach((messageId) => sendRelay(peerId, { type: "message-read", messageId }));
-  }, [conversations, sendRelay, updateConversations]);
+  }, [sendRelay, updateConversations]);
 
   const deleteConversation = useCallback((peerId: string) => updateConversations((previous) => previous.filter((item) => item.peerId !== peerId)), [updateConversations]);
 

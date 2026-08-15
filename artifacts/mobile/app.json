@@ -53,6 +53,15 @@
         {
           "microphonePermission": "Allow Linkora to access your microphone to record voice messages and make calls."
         }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "enableMinifyInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true
+          }
+        }
       ]
     ],
     "extra": {

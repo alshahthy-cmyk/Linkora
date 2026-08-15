@@ -15,6 +15,14 @@
         "buildType": "apk"
       }
     },
+    "preview-arm64": {
+      "extends": "preview",
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "preview",
+        "EXPO_PUBLIC_SIGNAL_URL": "wss://workspaceapi-server-production-5881.up.railway.app/api/signal",
+        "LINKORA_ANDROID_ARCH": "arm64"
+      }
+    },
     "production": {
       "node": "20.18.0",
       "pnpm": "10.17.1",

@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import { Image } from "expo-image";
 import { VideoView, useVideoPlayer } from "expo-video";
-import React from "react";
+import React, { memo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import type { Message } from "@/contexts/LinkoraContext";
@@ -60,7 +60,7 @@ function VoiceMessage({ source, durationMs, color, iconColor }: { source: string
   );
 }
 
-export function MessageBubble({ message, onLongPress }: MessageBubbleProps) {
+export const MessageBubble = memo(function MessageBubble({ message, onLongPress }: MessageBubbleProps) {
   const colors = useColors();
 
   if (message.type === "call_started" || message.type === "call_ended" || message.type === "call_missed") {
@@ -104,11 +104,17 @@ export function MessageBubble({ message, onLongPress }: MessageBubbleProps) {
           </View>
         ) : (
           <>
-            {message.type === "text" && <Text style={[styles.messageText, { color: textColor }]}>{message.content}</Text>}
-            {message.type === "image" && <Image source={{ uri: message.content }} style={styles.imageContent} contentFit="cover" />}
-            {message.type === "video" && <VideoMessage source={message.content} />}
-            {message.type === "voice" && <VoiceMessage source={message.content} durationMs={message.durationMs} color={isMe ? "rgba(255,255,255,0.22)" : colors.primary + "22"} iconColor={isMe ? "#fff" : colors.primary} />}
-            {message.type === "file" && (
+            {message.attachmentUnavailable && (
+              <View style={styles.unavailableAttachment}>
+                <Feather name="archive" size={16} color={metaColor} />
+                <Text style={[styles.unavailableAttachmentText, { color: metaColor }]}>Attachment removed from local history to keep Linkora stable</Text>
+              </View>
+            )}
+            {!message.attachmentUnavailable && message.type === "text" && <Text style={[styles.messageText, { color: textColor }]}>{message.content}</Text>}
+            {!message.attachmentUnavailable && message.type === "image" && <Image source={{ uri: message.content }} style={styles.imageContent} contentFit="cover" cachePolicy="memory-disk" />}
+            {!message.attachmentUnavailable && message.type === "video" && <VideoMessage source={message.content} />}
+            {!message.attachmentUnavailable && message.type === "voice" && <VoiceMessage source={message.content} durationMs={message.durationMs} color={isMe ? "rgba(255,255,255,0.22)" : colors.primary + "22"} iconColor={isMe ? "#fff" : colors.primary} />}
+            {!message.attachmentUnavailable && message.type === "file" && (
               <View style={styles.fileRow}>
                 <View style={[styles.fileIcon, { backgroundColor: isMe ? "rgba(255,255,255,0.2)" : colors.primary + "25" }]}>
                   <Feather name="file" size={18} color={isMe ? "#fff" : colors.primary} />
@@ -129,7 +135,7 @@ export function MessageBubble({ message, onLongPress }: MessageBubbleProps) {
       </Pressable>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   row: { paddingHorizontal: 12, paddingVertical: 2 },
@@ -152,6 +158,8 @@ const styles = StyleSheet.create({
   replyText: { fontSize: 12, fontFamily: "Inter_400Regular" },
   deletedRow: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 2 },
   deletedText: { fontSize: 14, fontFamily: "Inter_400Regular", fontStyle: "italic" },
+  unavailableAttachment: { flexDirection: "row", alignItems: "center", gap: 7, minWidth: 180, paddingVertical: 4 },
+  unavailableAttachmentText: { flex: 1, fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 17 },
   fileRow: { flexDirection: "row", gap: 10, alignItems: "center", minWidth: 180 },
   fileIcon: { width: 40, height: 40, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   fileInfo: { flex: 1, gap: 2 },
